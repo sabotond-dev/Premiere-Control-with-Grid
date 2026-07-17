@@ -128,12 +128,54 @@ function clearTimecode() {
     sendTimer = undefined;
   }
   pendingTc = undefined;
+  lastClipScript = undefined;
   if (!sentAny) return;
   sentAny = false;
   controller?.sendMessageToEditor({
     type: "execute-lua-script",
-    script: "pptc=nil",
+    script: "pptc=nil ppcn=nil ppct=nil",
   });
+}
+
+// --- Selected-clip readout -------------------------------------------
+// The panel reports the clicked clip's name + track; both go to the
+// modules as the ppcn / ppct Lua globals for the display block.
+
+let lastClipScript = undefined;
+
+// Module-font-safe name: map Hungarian accents to base letters, drop
+// anything non-printable or Lua-quote-hostile, and truncate to the 22
+// characters that fit the screen at glyph size 16.
+const ACCENT_MAP = {
+  "á": "a", "é": "e", "í": "i", "ó": "o",
+  "ö": "o", "ő": "o", "ú": "u", "ü": "u",
+  "ű": "u", "Á": "A", "É": "E", "Í": "I",
+  "Ó": "O", "Ö": "O", "Ő": "O", "Ú": "U",
+  "Ü": "U", "Ű": "U",
+};
+
+function moduleSafeName(name) {
+  let s = Array.from(String(name))
+    .map((ch) => {
+      if (ACCENT_MAP[ch]) return ACCENT_MAP[ch];
+      const code = ch.codePointAt(0);
+      return code >= 32 && code < 127 ? ch : "?";
+    })
+    .join("")
+    .replace(/['"\\]/g, " ")
+    .trim();
+  if (s.length > 22) s = s.slice(0, 20) + "..";
+  return s;
+}
+
+function sendClip(msg) {
+  const script = msg.none
+    ? "ppcn=nil ppct=nil"
+    : `ppcn='${moduleSafeName(msg.name)}' ` +
+      `ppct='${/^[AV]\d{1,2}$/.test(msg.track) ? msg.track : "?"}'`;
+  if (script === lastClipScript) return;
+  lastClipScript = script;
+  controller?.sendMessageToEditor({ type: "execute-lua-script", script });
 }
 
 // Trailing-edge throttle: bursts collapse to at most one immediate-Lua
@@ -266,6 +308,8 @@ function handlePanelData(chunk) {
           const tc = formatTimecode(msg.ticks, msg.tpf);
           if (tc) queueTimecode(tc);
         }
+      } else if (msg.type === "clip") {
+        if (screenEnabled) sendClip(msg);
       }
     } catch (e) {
       // Ignore malformed lines from the panel.
@@ -332,19 +376,26 @@ exports.loadPackage = async function (gridController, persistedData) {
   });
 
   // Timecode Display - goes INSIDE the screen element's draw event so
-  // the profile's own draw loop cannot overwrite it. Repaints only when
-  // the shown text changes (self.pptl remembers the last drawn value;
-  // resolving the nil fallback FIRST makes the initial dashes draw
-  // too), swaps its own frame, and guards on self.ldft so it is inert
-  // off-screen.
+  // the profile's own draw loop cannot overwrite it. Shows the playhead
+  // timecode plus, when a clip is selected in the timeline, its name
+  // and track (ppcn / ppct globals). Repaints only when the shown text
+  // changes (self.pptl remembers the last drawn key; resolving the nil
+  // fallbacks FIRST makes the initial dashes draw too), swaps its own
+  // frame, and guards on self.ldft so it is inert off-screen.
   createAction({
     short: "xpptc",
     displayName: "Timecode Display",
     defaultLua:
-      "local t=pptc or '--:--:--:--' " +
-      "if self.ldft and t~=self.pptl then self.pptl=t " +
+      "local t=pptc or '--:--:--:--' local n=ppcn or '' " +
+      "local k=t..n..(ppct or '') " +
+      "if self.ldft and k~=self.pptl then self.pptl=k " +
       "self:ldaf(0,0,319,239,{0,0,0}) " +
-      "self:ldft(t,40,108,24,{255,255,255}) " +
+      "self:ldft(t,40,84,24,{255,255,255}) " +
+      "if n~='' then " +
+      "local x=(320-#n*14)//2 if x<0 then x=0 end " +
+      "self:ldft(n,x,136,16,{170,170,170}) " +
+      "local c=ppct or '' " +
+      "self:ldft(c,(320-#c*14)//2,166,16,{255,255,255}) end " +
       "self:ldsw() end",
     actionComponent: "premiere-timecode-action",
   });

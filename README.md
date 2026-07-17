@@ -59,6 +59,14 @@ overwritten before it is ever visible. Inside the draw event the block
 coexists with the profile: it repaints only when the timecode changes
 and swaps its own frame.
 
+The readout also shows the **selected clip**: click a clip in the
+timeline and the screen adds its filename and track (`V1`, `A2`...)
+under the timecode. Hover cannot work - Adobe exposes no
+mouse-position API to panels - so selection is the signal, same as
+hardware control surfaces. The name is fitted for the module font
+(accents mapped to base letters, 22-character truncation); raw values
+are published as the `ppcn` (name) and `ppct` (track) Lua globals.
+
 Details worth knowing:
 
 - The block shows `--:--:--:--` while Premiere or the panel is closed

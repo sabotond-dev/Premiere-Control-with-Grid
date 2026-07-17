@@ -77,19 +77,83 @@ function gridTimeline(frames) {
   }
 }
 
-// Read the playhead for the module-screen readout. Answers ok with
-// none:true when no sequence is open, so the panel's poll loop stays
-// quiet instead of raising errors at the editor.
+// Locate which track a selected trackItem lives on ("V1", "A2"...).
+// Scans the sequence's clips, so callers cache by selection identity.
+function _trackLabel(seq, item) {
+  var mt = "";
+  try {
+    mt = String(item.mediaType);
+  } catch (e) {}
+  var i, j, tr;
+  if (mt !== "Audio") {
+    for (i = 0; i < seq.videoTracks.numTracks; i++) {
+      tr = seq.videoTracks[i];
+      for (j = 0; j < tr.clips.numItems; j++) {
+        if (
+          tr.clips[j].name === item.name &&
+          String(tr.clips[j].start.ticks) === String(item.start.ticks)
+        ) {
+          return "V" + (i + 1);
+        }
+      }
+    }
+  }
+  if (mt !== "Video") {
+    for (i = 0; i < seq.audioTracks.numTracks; i++) {
+      tr = seq.audioTracks[i];
+      for (j = 0; j < tr.clips.numItems; j++) {
+        if (
+          tr.clips[j].name === item.name &&
+          String(tr.clips[j].start.ticks) === String(item.start.ticks)
+        ) {
+          return "A" + (i + 1);
+        }
+      }
+    }
+  }
+  return "?";
+}
+
+var _selCacheKey = null;
+var _selCacheName = "";
+var _selCacheTrack = "";
+
+// Read the playhead (and the selected clip, if any) for the
+// module-screen readout. Answers ok with none:true when no sequence is
+// open, so the panel's poll loop stays quiet instead of raising errors
+// at the editor. The clip-track scan runs only when the selection
+// changes; unchanged selections reuse the cached label.
 // NB: this file must stay strictly ES3 - a single trailing comma in an
-// object literal makes $.evalFile reject the WHOLE file while older
-// definitions silently remain in the engine.
+// object literal makes the WHOLE file fail to evaluate - and must not
+// touch JSON, which does not exist in Premiere's engine.
 function gridPlayhead() {
   try {
     var seq = _seq();
     if (!seq) return _ok({ none: true });
     var tpf = parseFloat(seq.timebase);
     if (!tpf || tpf <= 0) return _ok({ none: true });
-    return _ok({ ticks: String(seq.getPlayerPosition().ticks), tpf: tpf });
+
+    var payload = { ticks: String(seq.getPlayerPosition().ticks), tpf: tpf };
+
+    try {
+      var sel = seq.getSelection();
+      if (sel && sel.length > 0 && sel[0] && sel[0].name) {
+        var key = sel[0].name + "|" + String(sel[0].start.ticks);
+        if (key !== _selCacheKey) {
+          _selCacheKey = key;
+          _selCacheName = String(sel[0].name);
+          _selCacheTrack = _trackLabel(seq, sel[0]);
+        }
+        payload.clip = _selCacheName;
+        payload.trk = _selCacheTrack;
+      } else {
+        _selCacheKey = null;
+      }
+    } catch (eSel) {
+      /* selection API unavailable: playhead still reports */
+    }
+
+    return _ok(payload);
   } catch (e) {
     return _err(e.toString());
   }

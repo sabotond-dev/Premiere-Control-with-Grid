@@ -230,10 +230,11 @@ function handleResult(script, result) {
 // in-flight poll would make the first detent wait a full eval
 // round-trip). Once movement is seen (playback, mouse scrub), polling
 // tightens to follow it.
-var POLL_IDLE_MS = 1000;
+var POLL_IDLE_MS = 500;
 var POLL_ACTIVE_MS = 250;
 var JOG_QUIET_MS = 800;
 var lastPlayheadKey = null;
+var lastClipKey = null;
 var lastJogAt = 0;
 var pollMoving = false;
 var readoutEnabled = true;
@@ -250,6 +251,20 @@ function reportNoSequence() {
   if (lastPlayheadKey === "none") return;
   lastPlayheadKey = "none";
   send({ type: "playhead", none: true });
+}
+
+// Selected-clip readout: name + track ("V1"/"A2") of the clip the user
+// clicked in the timeline. Deduped here so only changes travel.
+function reportClip(name, track) {
+  if (!readoutEnabled) return;
+  var key = name === null ? "none" : name + "|" + track;
+  if (key === lastClipKey) return;
+  lastClipKey = key;
+  if (name === null) {
+    send({ type: "clip", none: true });
+  } else {
+    send({ type: "clip", name: String(name), track: String(track || "?") });
+  }
 }
 
 function pollPlayhead() {
@@ -278,10 +293,17 @@ function pollPlayhead() {
         if (parsed.ok && parsed.none) {
           pollMoving = false;
           reportNoSequence();
+          reportClip(null);
         } else if (parsed.ok && parsed.ticks) {
           var prevKey = lastPlayheadKey;
           reportPlayhead(parsed.ticks, parsed.tpf);
           pollMoving = lastPlayheadKey !== prevKey;
+          // Clip selection changes independently of the playhead.
+          if (parsed.clip !== undefined) {
+            reportClip(parsed.clip, parsed.trk);
+          } else {
+            reportClip(null);
+          }
         }
       } catch (e) {
         /* odd poll answers are not worth logging */
@@ -307,6 +329,7 @@ function dispatch(command) {
     // reports - the exact pre-readout panel behavior.
     readoutEnabled = !!command.enabled;
     lastPlayheadKey = null;
+    lastClipKey = null;
     logLine("readout " + (readoutEnabled ? "on" : "off"));
     return;
   }
@@ -350,6 +373,7 @@ function connect() {
     // Re-send the playhead on a fresh connection: a restarted editor
     // has no idea where the timeline is until something changes.
     lastPlayheadKey = null;
+    lastClipKey = null;
     setStatus("Connected to Grid Editor", true);
     logLine("connected");
   });

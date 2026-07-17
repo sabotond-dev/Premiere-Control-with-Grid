@@ -198,13 +198,17 @@
       root.innerHTML = `
         <div class="pp-note">
           Shows the Premiere playhead as
-          <span class="pp-code">hh:mm:ss:ff</span> on the module screen.
-          Add this block to the screen element's <b>Draw</b> event on a
-          VSN1 (select the screen, pick the Draw event, add block). It
-          repaints only when the timecode changes and shows
+          <span class="pp-code">hh:mm:ss:ff</span> on the module screen,
+          plus the selected clip's filename and track
+          (<span class="pp-code">V1</span>/<span class="pp-code">A2</span>)
+          when a clip is clicked in the timeline. Add this block to the
+          screen element's <b>Draw</b> event on a VSN1. It repaints only
+          when something changes and shows
           <span class="pp-code">--:--:--:--</span> while Premiere or the
-          panel is closed. The raw value is the module Lua global
-          <span class="pp-code">pptc</span> if you want a custom layout.
+          panel is closed. Raw values are the module Lua globals
+          <span class="pp-code">pptc</span>,
+          <span class="pp-code">ppcn</span> and
+          <span class="pp-code">ppct</span> for custom layouts.
         </div>`;
       this.appendChild(root);
     }
@@ -217,10 +221,16 @@
     toScript() {
       return (
         this._script ??
-        "local t=pptc or '--:--:--:--' " +
-          "if self.ldft and t~=self.pptl then self.pptl=t " +
+        "local t=pptc or '--:--:--:--' local n=ppcn or '' " +
+          "local k=t..n..(ppct or '') " +
+          "if self.ldft and k~=self.pptl then self.pptl=k " +
           "self:ldaf(0,0,319,239,{0,0,0}) " +
-          "self:ldft(t,40,108,24,{255,255,255}) " +
+          "self:ldft(t,40,84,24,{255,255,255}) " +
+          "if n~='' then " +
+          "local x=(320-#n*14)//2 if x<0 then x=0 end " +
+          "self:ldft(n,x,136,16,{170,170,170}) " +
+          "local c=ppct or '' " +
+          "self:ldft(c,(320-#c*14)//2,166,16,{255,255,255}) end " +
           "self:ldsw() end"
       );
     }
