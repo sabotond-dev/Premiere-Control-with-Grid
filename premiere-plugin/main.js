@@ -9,7 +9,7 @@
 
 const ppro = require("premierepro");
 
-const BRIDGE_URL = "ws://127.0.0.1:3543";
+const BRIDGE_URL = "ws://localhost:3543";
 const RECONNECT_MS = 2000;
 
 // Polling is adaptive: rare while the playhead is static, tighter once
@@ -71,7 +71,10 @@ function connect() {
   try {
     socket = new WebSocket(BRIDGE_URL);
   } catch (e) {
+    // A synchronous throw here is almost always a manifest network
+    // permission problem - log the real reason so it is diagnosable.
     setStatus("Cannot open WebSocket", false);
+    logLine("WebSocket ctor: " + String(e?.message ?? e));
     setTimeout(connect, RECONNECT_MS);
     return;
   }

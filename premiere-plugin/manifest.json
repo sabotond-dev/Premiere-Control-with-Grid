@@ -10,7 +10,7 @@
   },
   "requiredPermissions": {
     "network": {
-      "domains": ["ws://localhost:3543", "ws://127.0.0.1:3543"]
+      "domains": "all"
     }
   },
   "entrypoints": [
