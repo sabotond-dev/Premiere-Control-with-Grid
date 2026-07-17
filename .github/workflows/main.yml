@@ -5,6 +5,10 @@ on:
     branches:
       - main
 
+# New repos default the workflow token to read-only; releases need write.
+permissions:
+  contents: write
+
 jobs:
   read-package-json:
     runs-on: ubuntu-latest

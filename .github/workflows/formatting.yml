@@ -21,7 +21,7 @@ jobs:
         run: |
           npm ci
           npm run format
-          prettier --write .
+          npx prettier --write .
           git status
           touch format_error.txt
           echo 'Changed Files:'
