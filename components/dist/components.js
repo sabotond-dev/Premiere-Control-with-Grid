@@ -107,13 +107,13 @@
     }
 
     fromScript(script) {
-      const m = script.match(/get_auto_value\(\)\*(\d+)/);
+      const m = script.match(/-64\)\*(\d+)\)$/);
       this.frames = m ? Number(m[1]) : 1;
       if (this.framesInput) this.framesInput.value = String(this.frames);
     }
 
     toScript() {
-      return `gps("${PKG}", "timeline", self:get_auto_value()*${this.frames}, self:get_auto_mode())`;
+      return `gps("${PKG}", "timeline", (((self.epst and self:epst()) or (self.est and self:est()) or 64)-64)*${this.frames})`;
     }
   }
 

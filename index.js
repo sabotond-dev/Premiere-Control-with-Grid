@@ -148,14 +148,15 @@ exports.loadPackage = async function (gridController, persistedData) {
     });
   }
 
-  // Timeline Navigate — the hero. On an endless knob, get_auto_value()
-  // yields the signed detent delta; the panel multiplies by the
-  // per-detent frame count and moves the playhead natively.
+  // Timeline Navigate — the hero. Signed detent delta from the
+  // element's own 64-centered step state (endless epst, encoder est),
+  // chosen at runtime so one script serves both. Same pattern the
+  // editor's Scroll block hardware-proved. Off-element it yields 0.
   createAction({
     short: "xpptl",
     displayName: "Timeline Navigate",
     defaultLua:
-      'gps("package-premiere-pro", "timeline", self:get_auto_value(), self:get_auto_mode())',
+      'gps("package-premiere-pro", "timeline", (((self.epst and self:epst()) or (self.est and self:est()) or 64)-64)*1)',
     actionComponent: "premiere-timeline-action",
   });
 

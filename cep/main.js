@@ -18,6 +18,26 @@ try {
 var socket = null;
 var connected = false;
 var buffer = "";
+var hostLoaded = false;
+
+// CEP 12 does not reliably auto-load the manifest ScriptPath into the
+// ExtendScript engine, which surfaces as "EvalScript error." on every
+// call. Load host.jsx explicitly and probe until it answers.
+function loadHost() {
+  var extPath = cs.getSystemPath(SystemPath.EXTENSION);
+  var jsxPath = (extPath + "/host.jsx").replace(/\\/g, "/");
+  cs.evalScript('$.evalFile("' + jsxPath + '")', function () {
+    cs.evalScript("typeof gridTimeline", function (result) {
+      if (result === "function") {
+        hostLoaded = true;
+        logLine("host loaded");
+      } else {
+        logLine("host not loaded yet (" + result + "), retrying");
+        setTimeout(loadHost, 1500);
+      }
+    });
+  });
+}
 
 function setStatus(text, on) {
   var dot = document.getElementById("dot");
@@ -46,6 +66,10 @@ function logLine(text) {
 // Run one command from the editor against the host.
 function dispatch(command) {
   if (!command || !command.cmd) return;
+  if (!hostLoaded) {
+    // Drop rather than spam errors while the host script loads.
+    return;
+  }
 
   var script = null;
   if (command.cmd === "timeline") {
@@ -137,4 +161,5 @@ function cleanup() {
 }
 
 setStatus("Waiting for Grid Editor…", false);
+loadHost();
 connect();
