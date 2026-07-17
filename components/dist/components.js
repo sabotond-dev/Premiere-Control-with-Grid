@@ -187,6 +187,44 @@
     }
   }
 
+  // --- Timecode Display ------------------------------------------------
+  // No parameters; the block carries its own draw-event Lua. The UI is
+  // a placement note, since this one only makes sense on the screen
+  // element's Draw event.
+  class TimecodeAction extends PremiereActionElement {
+    render() {
+      const root = document.createElement("div");
+      root.className = "pp-root";
+      root.innerHTML = `
+        <div class="pp-note">
+          Shows the Premiere playhead as
+          <span class="pp-code">hh:mm:ss:ff</span> on the module screen.
+          Add this block to the screen element's <b>Draw</b> event on a
+          VSN1 (select the screen, pick the Draw event, add block). It
+          repaints only when the timecode changes and shows
+          <span class="pp-code">--:--:--:--</span> while Premiere or the
+          panel is closed. The raw value is the module Lua global
+          <span class="pp-code">pptc</span> if you want a custom layout.
+        </div>`;
+      this.appendChild(root);
+    }
+
+    fromScript(script) {
+      // Nothing configurable; keep whatever the block carries.
+      this._script = script;
+    }
+
+    toScript() {
+      return (
+        this._script ??
+        "if self.ldft and pptc~=self.pptl then self.pptl=pptc " +
+          "self:ldaf(0,0,319,239,{0,0,0}) " +
+          "self:ldft(pptc or '--:--:--:--',40,108,24,{255,255,255}) " +
+          "self:ldsw() end"
+      );
+    }
+  }
+
   // --- Preference panel ------------------------------------------------
   // Shows live connection status to the CEP panel and setup steps.
   class PreferenceElement extends HTMLElement {
@@ -204,8 +242,8 @@
         <label class="pp-field" style="cursor:pointer;">
           <input type="checkbox" class="pp-screen" checked
             style="accent-color:#14ce96;flex:none;" />
-          <span style="min-width:0;">Show playhead timecode on the module
-            screen (VSN1)</span>
+          <span style="min-width:0;">Send playhead timecode to modules
+            (the <span class="pp-code">pptc</span> Lua global)</span>
         </label>
         <div class="pp-note">
           <ol class="pp-steps" style="padding-left:16px;margin:6px 0;">
@@ -216,11 +254,11 @@
           </ol>
           The connection is local only (<span class="pp-code">127.0.0.1:23120</span>).
           Timeline, marker and in/out commands run through Premiere's own
-          scripting API — no keyboard emulation. With the readout enabled
-          the VSN1 screen shows the playhead as
-          <span class="pp-code">hh:mm:ss:ff</span>; the current value is
-          also published to module Lua as the global
-          <span class="pp-code">pptc</span> for custom draw events.
+          scripting API — no keyboard emulation. To see the playhead on a
+          VSN1 screen, add the <b>Timecode Display</b> block to the screen
+          element's Draw event; this toggle controls whether the
+          <span class="pp-code">pptc</span> value is streamed to the
+          modules at all.
         </div>`;
       this.appendChild(root);
       this.dot = root.querySelector(".pp-dot");
@@ -262,6 +300,7 @@
     ["premiere-timeline-action", TimelineAction],
     ["premiere-marker-action", MarkerAction],
     ["premiere-inout-action", InOutAction],
+    ["premiere-timecode-action", TimecodeAction],
     ["premiere-preference", PreferenceElement],
   ];
   for (const [tag, cls] of defs) {

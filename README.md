@@ -43,31 +43,34 @@ VSN1 screen ◀──Lua──── Grid Editor ◀──TCP (same socket)─�
 ## Playhead readout (VSN1 screen)
 
 The channel also runs backwards: the panel polls the playhead
-(`getPlayerPosition`, every 200 ms while the command queue is idle,
-plus instantly after every jog) and reports changes over the same
-socket. The package converts ticks to `hh:mm:ss:ff` and pushes an
-immediate Lua script through the editor that paints the timecode on
-the VSN1 display using the global `gui_draw_*` functions. Modules
-without a screen skip the draw via an `if ggdsw then` guard, so the
-broadcast is harmless on the rest of the chain.
+(`getPlayerPosition`, every 200 ms while the command queue is idle and
+the knob is untouched, plus instantly after every jog) and reports
+changes over the same socket. The package converts ticks to
+`hh:mm:ss:ff` and keeps the module Lua global `pptc` fresh with a tiny
+immediate script (`pptc='00:01:23:12'`, throttled to ~10/s).
+
+Drawing happens on the module, via the **Timecode Display** action
+block: add it to the screen element's **Draw** event on a VSN1. This is
+deliberate - the profile's own draw loop repaints the screen every draw
+trigger (~25 ms), so anything painted from outside the draw event is
+overwritten before it is ever visible. Inside the draw event the block
+coexists with the profile: it repaints only when the timecode changes
+and swaps its own frame.
 
 Details worth knowing:
 
-- Toggle it in the package's preference panel ("Show playhead timecode
-  on the module screen"). The setting persists across editor restarts.
-- The readout owns the whole screen while active (the display is double
-  buffered; partial overlays would flicker against stale frames). Your
-  profile's own draw events still run and will win until the playhead
-  next moves.
-- Prefer drawing it yourself? Disable the readout; the current timecode
-  string stays published as the module Lua global `pptc`, so a Screen
-  Text block with the expression `=pptc` (or `pptc or '--'`) renders it
-  inside your own layout.
+- The block shows `--:--:--:--` while Premiere or the panel is closed
+  (`pptc` is nil'd on disconnect).
+- Want a custom layout? Skip the block and use `pptc` directly in your
+  own draw-event Lua, e.g. a Screen Text block with the expression
+  `=pptc or '--'`.
+- The preference panel toggle ("Send playhead timecode to modules")
+  stops the `pptc` stream entirely; it persists across restarts.
 - Timecode is non-drop-frame. On 29.97/59.94 drop-frame sequences the
   frames field can differ slightly from Premiere's display.
-- Screen updates are throttled to ~10 per second, and the final
-  position always lands. Closing Premiere or the panel clears the
-  screen.
+- Jog evals always take priority over playhead polls in the panel, and
+  polls pause for 400 ms after each jog delta, so the readout never
+  adds latency to scrubbing.
 
 ## Install (editor side)
 

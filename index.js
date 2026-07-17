@@ -22,15 +22,13 @@ const BRIDGE_PORT = Number(process.env.GRID_PP_BRIDGE_PORT) || 23120;
 // Premiere's fixed tick rate; frame math mirrors host.jsx.
 const TICKS_PER_SECOND = 254016000000;
 
-// VSN1 display geometry and readout layout. The gui_draw_* Lua globals
-// take a screen index, so no element context is needed, and the
-// `if ggdsw` guard makes the script a silent no-op on modules without
-// a screen (broadcast reaches every module in the chain).
-const SCREEN_W = 320;
-const SCREEN_H = 240;
-const TC_SIZE = 24; // glyph height; stock face advance is size-2 px
-const DRAW_MIN_MS = 100; // max ~10 screen updates per second
-const JOG_QUIET_MS = 250; // no draws while jog events are streaming
+// The package does not draw on the screen directly: the module profile
+// repaints its own UI from the screen's draw event, so a one-shot frame
+// pushed from outside is overwritten within one draw trigger (~25ms).
+// Instead only the pptc global is kept fresh (a tiny immediate script),
+// and the Timecode Display action block renders it from INSIDE the
+// draw event, where it persists.
+const SEND_MIN_MS = 100; // max ~10 pptc updates per second
 
 let controller;
 let preferenceMessagePort = undefined;
@@ -45,16 +43,15 @@ let lastLegacyValue = undefined;
 let legacyWarned = false;
 
 // Playhead readout state. lastTc is the last timecode the panel
-// reported; pendingTc waits on the throttle timer; screenDirty tracks
-// whether the module screen currently shows our drawing (so the clear
-// on disconnect/disable only fires when there is something to clear).
+// reported; pendingTc waits on the throttle timer; sentAny tracks
+// whether pptc was ever set (so the nil on disconnect/disable only
+// fires when there is something to clear).
 let screenEnabled = true;
 let lastTc = undefined;
 let pendingTc = undefined;
-let drawTimer = undefined;
-let lastDrawAt = 0;
-let lastJogAt = 0;
-let screenDirty = false;
+let sendTimer = undefined;
+let lastSendAt = 0;
+let sentAny = false;
 
 function notifyStatusChange() {
   preferenceMessagePort?.postMessage({
@@ -82,70 +79,49 @@ function formatTimecode(ticksStr, tpf) {
   return `${p(hh)}:${p(mm)}:${p(ss)}:${p(ff)}`;
 }
 
-// Paint the whole screen, not just a strip: the display is double
-// buffered, so partial drawing would alternate with stale frames of
-// whatever the profile drew last. Owning the full frame keeps it
-// steady. pptc is also published as a module global for users who
-// disable the built-in readout and render it from their own draw event.
-function drawTimecode(tc) {
-  lastDrawAt = Date.now();
-  screenDirty = true;
-  const width = tc.length * (TC_SIZE - 2) - (TC_SIZE >> 3);
-  const x = Math.max(0, (SCREEN_W - width) >> 1);
-  const y = (SCREEN_H - TC_SIZE) >> 1;
+// Push the timecode string into the pptc module global. Broadcast to
+// the whole chain; a bare assignment is harmless on modules without a
+// screen and cheap enough not to disturb the module during jogs.
+function sendTimecode(tc) {
+  lastSendAt = Date.now();
+  sentAny = true;
   controller?.sendMessageToEditor({
     type: "execute-lua-script",
-    script:
-      `pptc='${tc}' if ggdsw then ` +
-      `ggdaf(0,0,0,${SCREEN_W - 1},${SCREEN_H - 1},{0,0,0}) ` +
-      `ggdt(0,'${tc}',${x},${y},${TC_SIZE},{255,255,255}) ` +
-      `ggdsw(0) end`,
+    script: `pptc='${tc}'`,
   });
 }
 
-function clearScreen() {
-  if (drawTimer) {
-    clearTimeout(drawTimer);
-    drawTimer = undefined;
+function clearTimecode() {
+  if (sendTimer) {
+    clearTimeout(sendTimer);
+    sendTimer = undefined;
   }
   pendingTc = undefined;
-  if (!screenDirty) return;
-  screenDirty = false;
+  if (!sentAny) return;
+  sentAny = false;
   controller?.sendMessageToEditor({
     type: "execute-lua-script",
-    script:
-      "pptc=nil if ggdsw then " +
-      `ggdaf(0,0,0,${SCREEN_W - 1},${SCREEN_H - 1},{0,0,0}) ggdsw(0) end`,
+    script: "pptc=nil",
   });
 }
 
 // Trailing-edge throttle: bursts (playback, fast jogs) collapse to at
-// most one immediate-Lua packet per DRAW_MIN_MS, and the final
-// position always lands. While jog events are streaming the draw is
-// deferred entirely - the drawing happens on the same module whose
-// encoder produces the jog events, and a full-frame paint per detent
-// makes the knob feel laggy. The timecode lands right after the twist.
+// most one immediate-Lua packet per SEND_MIN_MS, and the final
+// position always lands.
 function queueTimecode(tc) {
   if (tc === lastTc) return;
   lastTc = tc;
   if (!screenEnabled) return;
   pendingTc = tc;
-  scheduleDraw(DRAW_MIN_MS - (Date.now() - lastDrawAt));
-}
-
-function scheduleDraw(delayMs) {
-  if (drawTimer) return;
-  drawTimer = setTimeout(() => {
-    drawTimer = undefined;
-    if (pendingTc === undefined || !screenEnabled) return;
-    const sinceJog = Date.now() - lastJogAt;
-    if (sinceJog < JOG_QUIET_MS) {
-      scheduleDraw(JOG_QUIET_MS - sinceJog);
-      return;
+  if (sendTimer) return;
+  const wait = Math.max(0, SEND_MIN_MS - (Date.now() - lastSendAt));
+  sendTimer = setTimeout(() => {
+    sendTimer = undefined;
+    if (pendingTc !== undefined && screenEnabled) {
+      sendTimecode(pendingTc);
+      pendingTc = undefined;
     }
-    drawTimecode(pendingTc);
-    pendingTc = undefined;
-  }, Math.max(0, delayMs));
+  }, wait);
 }
 
 // Send one newline-delimited JSON command to the CEP panel. Silently
@@ -181,10 +157,10 @@ function startServer() {
       if (panelSocket === socket) {
         panelSocket = undefined;
         isPanelConnected = false;
-        // Premiere went away: take the stale timecode off the screen
-        // and forget it, so a reconnect always redraws.
+        // Premiere went away: nil out the stale timecode (the display
+        // block shows dashes) and forget it so a reconnect resends.
         lastTc = undefined;
-        clearScreen();
+        clearTimecode();
         notifyStatusChange();
       }
     });
@@ -302,6 +278,21 @@ exports.loadPackage = async function (gridController, persistedData) {
     actionComponent: "premiere-inout-action",
   });
 
+  // Timecode Display - goes INSIDE the screen element's draw event so
+  // the profile's own draw loop cannot overwrite it. Repaints only when
+  // pptc changed (self.pptl remembers the last drawn value), swaps its
+  // own frame, and guards on self.ldft so it is inert off-screen.
+  createAction({
+    short: "xpptc",
+    displayName: "Timecode Display",
+    defaultLua:
+      "if self.ldft and pptc~=self.pptl then self.pptl=pptc " +
+      "self:ldaf(0,0,319,239,{0,0,0}) " +
+      "self:ldft(pptc or '--:--:--:--',40,108,24,{255,255,255}) " +
+      "self:ldsw() end",
+    actionComponent: "premiere-timecode-action",
+  });
+
   startServer();
   notifyStatusChange();
 };
@@ -314,7 +305,7 @@ exports.unloadPackage = async function () {
       actionId: --actionId,
     });
   }
-  clearScreen();
+  clearTimecode();
   stopServer();
 };
 
@@ -332,11 +323,11 @@ exports.addMessagePort = async function (port, senderId) {
           data: { screenReadout: screenEnabled },
         });
         if (!screenEnabled) {
-          clearScreen();
+          clearTimecode();
         } else if (lastTc !== undefined) {
-          // Redraw the last known position right away instead of
+          // Resend the last known position right away instead of
           // waiting for the playhead to move again.
-          drawTimecode(lastTc);
+          sendTimecode(lastTc);
         }
         notifyStatusChange();
       }
@@ -377,7 +368,6 @@ exports.sendMessage = async function (args) {
       delta = Number(args[1]);
     }
     if (!isFinite(delta) || delta === 0) return;
-    lastJogAt = Date.now();
     if (delta > 240) delta = 240;
     if (delta < -240) delta = -240;
     sendToPanel({ cmd: "timeline", delta });
