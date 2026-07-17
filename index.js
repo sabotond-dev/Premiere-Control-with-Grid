@@ -26,6 +26,8 @@ let packageShutDown = false;
 let actionId = 0;
 
 let isPanelConnected = false;
+let lastLegacyValue = undefined;
+let legacyWarned = false;
 
 function notifyStatusChange() {
   preferenceMessagePort?.postMessage({
@@ -212,10 +214,32 @@ exports.sendMessage = async function (args) {
   const group = args[0];
 
   if (group === "timeline") {
-    // args: ["timeline", delta, mode]. mode 0 = absolute-ish encoder,
-    // we only use the signed delta for relative jogging.
-    const delta = Number(args[1]) || 0;
-    if (delta === 0) return;
+    // Current scripts send one signed delta: ["timeline", delta].
+    // Legacy scripts (pre-fix) sent ["timeline", absoluteValue, mode];
+    // derive a delta from the change so old blocks degrade gracefully
+    // instead of scrubbing one way forever.
+    let delta;
+    if (args.length >= 3) {
+      const value = Number(args[1]);
+      if (!isFinite(value)) return;
+      delta =
+        typeof lastLegacyValue === "number" ? value - lastLegacyValue : 0;
+      lastLegacyValue = value;
+      if (!legacyWarned) {
+        legacyWarned = true;
+        controller?.sendMessageToEditor({
+          type: "show-message",
+          message:
+            "Timeline Navigate block uses an outdated script - remove and re-add it for exact jogging.",
+          messageType: "fail",
+        });
+      }
+    } else {
+      delta = Number(args[1]);
+    }
+    if (!isFinite(delta) || delta === 0) return;
+    if (delta > 240) delta = 240;
+    if (delta < -240) delta = -240;
     sendToPanel({ cmd: "timeline", delta });
     return;
   }

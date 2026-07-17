@@ -31,6 +31,7 @@ function loadHost() {
       if (result === "function") {
         hostLoaded = true;
         logLine("host loaded");
+        pump();
       } else {
         logLine("host not loaded yet (" + result + "), retrying");
         setTimeout(loadHost, 1500);
@@ -63,40 +64,84 @@ function logLine(text) {
   }
 }
 
-// Run one command from the editor against the host.
-function dispatch(command) {
-  if (!command || !command.cmd) return;
-  if (!hostLoaded) {
-    // Drop rather than spam errors while the host script loads.
+// --- Serialized eval queue -------------------------------------------
+// A fast knob twist produces dozens of events; firing an evalScript per
+// event floods Premiere's single ExtendScript engine and it starts
+// answering "EvalScript error.". Instead: only one eval is ever in
+// flight, timeline deltas accumulate while busy and flush as one jump,
+// and discrete commands (markers, in/out) queue in order.
+
+var evalBusy = false;
+var pendingDelta = 0;
+var pendingCommands = [];
+var lastHostReload = 0;
+
+function pump() {
+  if (evalBusy || !hostLoaded) return;
+
+  var script = null;
+  if (pendingDelta !== 0) {
+    var d = pendingDelta;
+    pendingDelta = 0;
+    // Clamp a runaway accumulation to something sane per jump.
+    if (d > 2000) d = 2000;
+    if (d < -2000) d = -2000;
+    script = "gridTimeline(" + d + ")";
+  } else if (pendingCommands.length > 0) {
+    script = pendingCommands.shift();
+  } else {
     return;
   }
 
-  var script = null;
-  if (command.cmd === "timeline") {
-    script = "gridTimeline(" + Number(command.delta || 0) + ")";
-  } else if (command.cmd === "marker") {
-    script = 'gridMarker("' + String(command.action || "add") + '")';
-  } else if (command.cmd === "inout") {
-    script = 'gridInOut("' + String(command.action || "in") + '")';
-  }
-  if (script === null) return;
-
+  evalBusy = true;
   cs.evalScript(script, function (result) {
-    var ok = true;
-    var message = "";
-    try {
-      var parsed = JSON.parse(result);
-      ok = parsed.ok !== false;
-      message = parsed.message || "";
-    } catch (e) {
-      ok = false;
-      message = result;
-    }
-    if (!ok) {
-      logLine("error: " + message);
-      send({ type: "error", message: message });
-    }
+    evalBusy = false;
+    handleResult(script, result);
+    // More may have accumulated while we were busy.
+    pump();
   });
+}
+
+function handleResult(script, result) {
+  if (result === "EvalScript error.") {
+    // The host either lost our functions or the engine hiccuped.
+    // Reload host.jsx (throttled) and report once.
+    var now = Date.now();
+    if (now - lastHostReload > 3000) {
+      lastHostReload = now;
+      hostLoaded = false;
+      logLine("host lost, reloading (" + script + ")");
+      loadHost();
+    }
+    return;
+  }
+  try {
+    var parsed = JSON.parse(result);
+    if (parsed.ok === false) {
+      logLine("error: " + (parsed.message || "unknown"));
+      send({ type: "error", message: parsed.message || "unknown" });
+    }
+  } catch (e) {
+    logLine("odd result: " + String(result).slice(0, 80));
+  }
+}
+
+// Run one command from the editor against the host.
+function dispatch(command) {
+  if (!command || !command.cmd) return;
+
+  if (command.cmd === "timeline") {
+    var d = Number(command.delta);
+    if (!isFinite(d) || d === 0) return;
+    pendingDelta += d;
+  } else if (command.cmd === "marker") {
+    pendingCommands.push('gridMarker("' + String(command.action || "add") + '")');
+  } else if (command.cmd === "inout") {
+    pendingCommands.push('gridInOut("' + String(command.action || "in") + '")');
+  } else {
+    return;
+  }
+  pump();
 }
 
 function send(obj) {
