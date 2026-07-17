@@ -29,6 +29,7 @@ const TICKS_PER_SECOND = 254016000000;
 // and the Timecode Display action block renders it from INSIDE the
 // draw event, where it persists.
 const SEND_MIN_MS = 100; // max ~10 pptc updates per second
+const JOG_QUIET_MS = 300; // hold pptc updates while jog events stream
 
 let controller;
 let preferenceMessagePort = undefined;
@@ -51,6 +52,7 @@ let lastTc = undefined;
 let pendingTc = undefined;
 let sendTimer = undefined;
 let lastSendAt = 0;
+let lastJogAt = 0;
 let sentAny = false;
 
 function notifyStatusChange() {
@@ -105,23 +107,33 @@ function clearTimecode() {
   });
 }
 
-// Trailing-edge throttle: bursts (playback, fast jogs) collapse to at
-// most one immediate-Lua packet per SEND_MIN_MS, and the final
-// position always lands.
+// Trailing-edge throttle: bursts collapse to at most one immediate-Lua
+// packet per SEND_MIN_MS, and the final position always lands. While
+// jog events are streaming, updates are held entirely: each pptc
+// change makes the Timecode Display block repaint a full frame on the
+// very module whose encoder produces the jog events, which reads as
+// knob lag. The screen catches up the moment the twist pauses.
 function queueTimecode(tc) {
   if (tc === lastTc) return;
   lastTc = tc;
   if (!screenEnabled) return;
   pendingTc = tc;
+  scheduleSend(SEND_MIN_MS - (Date.now() - lastSendAt));
+}
+
+function scheduleSend(delayMs) {
   if (sendTimer) return;
-  const wait = Math.max(0, SEND_MIN_MS - (Date.now() - lastSendAt));
   sendTimer = setTimeout(() => {
     sendTimer = undefined;
-    if (pendingTc !== undefined && screenEnabled) {
-      sendTimecode(pendingTc);
-      pendingTc = undefined;
+    if (pendingTc === undefined || !screenEnabled) return;
+    const sinceJog = Date.now() - lastJogAt;
+    if (sinceJog < JOG_QUIET_MS) {
+      scheduleSend(JOG_QUIET_MS - sinceJog);
+      return;
     }
-  }, wait);
+    sendTimecode(pendingTc);
+    pendingTc = undefined;
+  }, Math.max(0, delayMs));
 }
 
 // Send one newline-delimited JSON command to the CEP panel. Silently
@@ -372,6 +384,7 @@ exports.sendMessage = async function (args) {
       delta = Number(args[1]);
     }
     if (!isFinite(delta) || delta === 0) return;
+    lastJogAt = Date.now();
     if (delta > 240) delta = 240;
     if (delta < -240) delta = -240;
     sendToPanel({ cmd: "timeline", delta });

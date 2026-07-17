@@ -68,9 +68,12 @@ Details worth knowing:
   stops the `pptc` stream entirely; it persists across restarts.
 - Timecode is non-drop-frame. On 29.97/59.94 drop-frame sequences the
   frames field can differ slightly from Premiere's display.
-- Jog evals always take priority over playhead polls in the panel, and
-  polls pause for 400 ms after each jog delta, so the readout never
-  adds latency to scrubbing.
+- The readout stays out of scrubbing's way twice over: panel-side,
+  playhead polls pause for 400 ms after each jog delta (jog evals
+  report the position themselves); editor-side, pptc updates are held
+  while jog events stream, because every update makes the display
+  block repaint a full frame on the module being turned. The screen
+  freezes during a twist and catches up ~300 ms after it stops.
 
 ## Install (editor side)
 
