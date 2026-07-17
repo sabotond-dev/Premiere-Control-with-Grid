@@ -23,20 +23,57 @@ var hostLoaded = false;
 // CEP 12 does not reliably auto-load the manifest ScriptPath into the
 // ExtendScript engine, which surfaces as "EvalScript error." on every
 // call. Load host.jsx explicitly and probe until it answers.
+// Load host.jsx by evaluating its SOURCE, read via Node - not
+// $.evalFile. A parse error in the file then surfaces here directly,
+// instead of silently leaving stale definitions from an earlier load
+// in Premiere's persistent ExtendScript engine.
+// cs.getSystemPath can return a file:///C:/... URL (CEP 12); Node's
+// fs needs a plain filesystem path.
+function extensionDir() {
+  var p = cs.getSystemPath(SystemPath.EXTENSION);
+  p = decodeURIComponent(String(p).replace(/^file:\/{2,3}/, ""));
+  if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);
+  return p;
+}
+
 function loadHost() {
-  var extPath = cs.getSystemPath(SystemPath.EXTENSION);
-  var jsxPath = (extPath + "/host.jsx").replace(/\\/g, "/");
-  cs.evalScript('$.evalFile("' + jsxPath + '")', function () {
-    cs.evalScript("typeof gridTimeline", function (result) {
-      if (result === "function") {
-        hostLoaded = true;
-        logLine("host loaded");
-        pump();
-      } else {
-        logLine("host not loaded yet (" + result + "), retrying");
-        setTimeout(loadHost, 1500);
+  var source = null;
+  try {
+    source = require("fs").readFileSync(extensionDir() + "/host.jsx", "utf8");
+  } catch (e) {
+    logLine("cannot read host.jsx: " + e);
+    setTimeout(loadHost, 3000);
+    return;
+  }
+  cs.evalScript(source, function (evalResult) {
+    if (evalResult === "EvalScript error.") {
+      logLine("host.jsx failed to evaluate (parse error?)");
+      send({ type: "diag-panel", stage: "eval-source", result: "error" });
+    }
+    // Probe for the NEWEST function, not just any function, so a stale
+    // engine can never pass as loaded.
+    cs.evalScript(
+      "typeof gridTimeline + '/' + typeof gridPlayhead",
+      function (result) {
+        send({ type: "diag-panel", stage: "probe", result: String(result) });
+        if (result === "function/function") {
+          hostLoaded = true;
+          logLine("host loaded");
+          // One raw self-test so failures are visible end to end.
+          cs.evalScript("gridPlayhead()", function (r) {
+            send({
+              type: "diag-panel",
+              stage: "selftest",
+              result: String(r).slice(0, 300)
+            });
+          });
+          pump();
+        } else {
+          logLine("host not loaded yet (" + result + "), retrying");
+          setTimeout(loadHost, 1500);
+        }
       }
-    });
+    );
   });
 }
 

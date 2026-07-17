@@ -6,16 +6,39 @@
 // 254,016,000,000 ticks per second is Premiere's fixed tick rate.
 var TICKS_PER_SECOND = 254016000000;
 
+// Premiere's ExtendScript engine ships WITHOUT a JSON object, so
+// results are serialized by hand. Payloads are flat objects of
+// numbers, booleans and strings - nothing nested.
+function _esc(s) {
+  return String(s)
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r");
+}
+
+function _val(v) {
+  if (typeof v === "number" && isFinite(v)) return String(v);
+  if (typeof v === "boolean") return v ? "true" : "false";
+  return '"' + _esc(v) + '"';
+}
+
+function _json(obj) {
+  var parts = [];
+  for (var k in obj) parts.push('"' + k + '":' + _val(obj[k]));
+  return "{" + parts.join(",") + "}";
+}
+
 function _ok(extra) {
   var o = { ok: true };
   if (extra) {
     for (var k in extra) o[k] = extra[k];
   }
-  return JSON.stringify(o);
+  return _json(o);
 }
 
 function _err(message) {
-  return JSON.stringify({ ok: false, message: String(message) });
+  return _json({ ok: false, message: String(message) });
 }
 
 function _seq() {
@@ -57,16 +80,16 @@ function gridTimeline(frames) {
 // Read the playhead for the module-screen readout. Answers ok with
 // none:true when no sequence is open, so the panel's poll loop stays
 // quiet instead of raising errors at the editor.
+// NB: this file must stay strictly ES3 - a single trailing comma in an
+// object literal makes $.evalFile reject the WHOLE file while older
+// definitions silently remain in the engine.
 function gridPlayhead() {
   try {
     var seq = _seq();
     if (!seq) return _ok({ none: true });
     var tpf = parseFloat(seq.timebase);
     if (!tpf || tpf <= 0) return _ok({ none: true });
-    return _ok({
-      ticks: String(seq.getPlayerPosition().ticks),
-      tpf: tpf,
-    });
+    return _ok({ ticks: String(seq.getPlayerPosition().ticks), tpf: tpf });
   } catch (e) {
     return _err(e.toString());
   }

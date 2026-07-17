@@ -280,15 +280,18 @@ exports.loadPackage = async function (gridController, persistedData) {
 
   // Timecode Display - goes INSIDE the screen element's draw event so
   // the profile's own draw loop cannot overwrite it. Repaints only when
-  // pptc changed (self.pptl remembers the last drawn value), swaps its
-  // own frame, and guards on self.ldft so it is inert off-screen.
+  // the shown text changes (self.pptl remembers the last drawn value;
+  // resolving the nil fallback FIRST makes the initial dashes draw
+  // too), swaps its own frame, and guards on self.ldft so it is inert
+  // off-screen.
   createAction({
     short: "xpptc",
     displayName: "Timecode Display",
     defaultLua:
-      "if self.ldft and pptc~=self.pptl then self.pptl=pptc " +
+      "local t=pptc or '--:--:--:--' " +
+      "if self.ldft and t~=self.pptl then self.pptl=t " +
       "self:ldaf(0,0,319,239,{0,0,0}) " +
-      "self:ldft(pptc or '--:--:--:--',40,108,24,{255,255,255}) " +
+      "self:ldft(t,40,108,24,{255,255,255}) " +
       "self:ldsw() end",
     actionComponent: "premiere-timecode-action",
   });
@@ -342,6 +345,7 @@ exports.addMessagePort = async function (port, senderId) {
 exports.sendMessage = async function (args) {
   if (!Array.isArray(args)) return;
   const group = args[0];
+
 
   if (group === "timeline") {
     // Current scripts send one signed delta: ["timeline", delta].

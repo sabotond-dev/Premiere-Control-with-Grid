@@ -217,9 +217,10 @@
     toScript() {
       return (
         this._script ??
-        "if self.ldft and pptc~=self.pptl then self.pptl=pptc " +
+        "local t=pptc or '--:--:--:--' " +
+          "if self.ldft and t~=self.pptl then self.pptl=t " +
           "self:ldaf(0,0,319,239,{0,0,0}) " +
-          "self:ldft(pptc or '--:--:--:--',40,108,24,{255,255,255}) " +
+          "self:ldft(t,40,108,24,{255,255,255}) " +
           "self:ldsw() end"
       );
     }
