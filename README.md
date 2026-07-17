@@ -37,12 +37,25 @@ VSN1 screen ◀──Lua──── Grid Editor ◀──same WebSocket──�
 
 ## Action blocks
 
-| Block             | Best on      | What it does                           |
-| ----------------- | ------------ | -------------------------------------- |
-| Timeline Navigate | endless knob | Jog the playhead N frames per detent   |
-| Marker            | button       | Add marker, or jump to next / previous |
-| In / Out Point    | button       | Set in / out at playhead, or clear     |
-| Premiere Display  | VSN1 screen  | Playhead + selected clip status screen |
+| Block             | Best on      | What it does                                                                                     |
+| ----------------- | ------------ | ------------------------------------------------------------------------------------------------ |
+| Timeline Navigate | endless knob | Jog the playhead N frames per detent                                                             |
+| Timeline Zoom     | endless knob | Zoom the timeline in/out per detent                                                              |
+| Marker            | button       | Add marker, or jump to next / previous                                                           |
+| In / Out Point    | button       | Set in / out at playhead, or clear                                                               |
+| Playhead Edit     | button       | Select all under playhead (API), cut all under playhead, trim before/after                       |
+| Clip              | button       | Enable/disable + delete selection (API), speed/duration, audio gain, group, ungroup, copy, paste |
+| Project           | button       | Save (API), undo, redo, export, render in-out                                                    |
+| Tool              | button       | Selection / Razor tool                                                                           |
+| View              | button       | Snap toggle, Effect Controls panel                                                               |
+| Modifier Hold     | button       | Hold Alt / Shift / Ctrl while the button is held                                                 |
+| Premiere Display  | VSN1 screen  | Playhead + selected clip status screen                                                           |
+
+Keyboard-backed entries type Premiere's **default shortcuts** as real
+USB keystrokes from the module itself (Premiere must be the focused
+app; remapped shortcuts won't match). API-backed entries (marked)
+run through the UXP plugin, are undoable, and work regardless of
+focus.
 
 ## Install (user)
 

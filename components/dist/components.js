@@ -190,6 +190,276 @@
     }
   }
 
+  // --- Keyboard / command blocks ---------------------------------------
+  // Two kinds of options share one dropdown component:
+  //  - key options fire module-side USB keystrokes via gks (triplets of
+  //    is_modifier, state, keycode; modifiers are the bitmask 1=Ctrl,
+  //    2=Shift, 4=Alt; state 1=down, 0=up, 2=tap). Zero latency, works
+  //    without the Premiere plugin, needs Premiere focused.
+  //  - gps options call the UXP plugin through the editor bridge and
+  //    use Premiere's API (undoable, focus-independent).
+  // Everything is press-edge latched (the SimpleKeyboard pattern) so
+  // analog buttons that re-fire mid-press only trigger once.
+
+  function edgeLatch(latch, payload) {
+    return (
+      `if self:bst()>0 then if self.${latch}~=1 then self.${latch}=1 ` +
+      `${payload} end else self.${latch}=0 end`
+    );
+  }
+
+  function tapKeys(mods, code) {
+    const t = [];
+    for (const m of mods) t.push(`1,1,${m}`);
+    t.push(`0,2,${code}`);
+    for (const m of [...mods].reverse()) t.push(`1,0,${m}`);
+    return `gks(25,${t.join(",")})`;
+  }
+
+  function optionScript(latch, opt) {
+    if (opt.gps) {
+      return edgeLatch(
+        latch,
+        `gps("${PKG}", "${opt.gps[0]}", "${opt.gps[1]}")`,
+      );
+    }
+    return edgeLatch(latch, tapKeys(opt.mods ?? [], opt.code));
+  }
+
+  const norm = (s) => String(s).replace(/\s+/g, "");
+
+  // Generic dropdown block: value <-> generated script, matched with
+  // whitespace-insensitive equality so beautified round-trips survive.
+  function makeDropdownAction(latch, options, noteHtml) {
+    return class extends PremiereActionElement {
+      render() {
+        this.value = options[0].value;
+        const root = document.createElement("div");
+        root.className = "pp-root";
+        root.innerHTML = `
+          <label class="pp-field">
+            <span>Do</span>
+            <select class="pp-input pp-action">
+              ${options
+                .map((o) => `<option value="${o.value}">${o.label}</option>`)
+                .join("")}
+            </select>
+          </label>
+          <div class="pp-note">${noteHtml}</div>`;
+        this.appendChild(root);
+        this.sel = root.querySelector(".pp-action");
+        this.sel.addEventListener("change", () => {
+          this.value = this.sel.value;
+          this.commit();
+        });
+      }
+
+      fromScript(script) {
+        const s = norm(script);
+        const found = options.find((o) => norm(optionScript(latch, o)) === s);
+        this.value = found ? found.value : options[0].value;
+        if (this.sel) this.sel.value = this.value;
+      }
+
+      toScript() {
+        const opt = options.find((o) => o.value === this.value) ?? options[0];
+        return optionScript(latch, opt);
+      }
+    };
+  }
+
+  const KEYS_NOTE =
+    "Keyboard-backed entries type Premiere's default shortcut from the " +
+    "module itself - Premiere must be the focused app. API-backed " +
+    "entries run through the Grid Control plugin.";
+
+  const ToolAction = makeDropdownAction(
+    "pptool",
+    [
+      { value: "selection", label: "Selection tool (V)", code: 25 },
+      { value: "razor", label: "Razor tool (C)", code: 6 },
+    ],
+    "Switches the active Premiere tool. " + KEYS_NOTE,
+  );
+
+  const PlayheadAction = makeDropdownAction(
+    "pphd",
+    [
+      {
+        value: "select",
+        label: "Select all under playhead",
+        gps: ["phead", "select"],
+      },
+      {
+        value: "cut",
+        label: "Cut all under playhead (Ctrl+Shift+K)",
+        mods: [1, 2],
+        code: 14,
+      },
+      { value: "trimbefore", label: "Trim before - ripple Q", code: 20 },
+      { value: "trimafter", label: "Trim after - ripple W", code: 26 },
+    ],
+    "Edits at the playhead position. " + KEYS_NOTE,
+  );
+
+  const ClipAction = makeDropdownAction(
+    "ppcl",
+    [
+      {
+        value: "toggle",
+        label: "Enable / Disable clip",
+        gps: ["clipop", "toggle"],
+      },
+      { value: "delete", label: "Delete selection", gps: ["clipop", "delete"] },
+      {
+        value: "speed",
+        label: "Speed/Duration… (Ctrl+R)",
+        mods: [1],
+        code: 21,
+      },
+      { value: "gain", label: "Audio Gain… (G)", code: 10 },
+      { value: "group", label: "Group (Ctrl+G)", mods: [1], code: 10 },
+      {
+        value: "ungroup",
+        label: "Ungroup (Ctrl+Shift+G)",
+        mods: [1, 2],
+        code: 10,
+      },
+      { value: "copy", label: "Copy (Ctrl+C)", mods: [1], code: 6 },
+      { value: "paste", label: "Paste (Ctrl+V)", mods: [1], code: 25 },
+    ],
+    "Acts on the clips selected in the timeline. " + KEYS_NOTE,
+  );
+
+  const ProjectAction = makeDropdownAction(
+    "pppr",
+    [
+      { value: "save", label: "Save project", gps: ["project", "save"] },
+      { value: "undo", label: "Undo (Ctrl+Z)", mods: [1], code: 29 },
+      { value: "redo", label: "Redo (Ctrl+Shift+Z)", mods: [1, 2], code: 29 },
+      { value: "export", label: "Export… (Ctrl+M)", mods: [1], code: 16 },
+      { value: "render", label: "Render in to out (Enter)", code: 40 },
+    ],
+    "Project-level commands. " + KEYS_NOTE,
+  );
+
+  const ViewAction = makeDropdownAction(
+    "ppvw",
+    [
+      { value: "snap", label: "Snap toggle (S)", code: 22 },
+      {
+        value: "effects",
+        label: "Effect Controls panel (Shift+5)",
+        mods: [2],
+        code: 34,
+      },
+    ],
+    "Workspace toggles. " + KEYS_NOTE,
+  );
+
+  // --- Modifier Hold ---------------------------------------------------
+  // Holds Alt or Shift for as long as the Grid button is held, for
+  // alt-drag duplicating, shift-clicking multi-select and friends.
+  const MODIFIERS = [
+    { value: "alt", label: "Alt", mask: 4 },
+    { value: "shift", label: "Shift", mask: 2 },
+    { value: "ctrl", label: "Ctrl", mask: 1 },
+  ];
+
+  function modifierScript(mask) {
+    return (
+      `if self:bst()>0 then if self.ppmd~=1 then self.ppmd=1 ` +
+      `gks(25,1,1,${mask}) end else ` +
+      `if self.ppmd==1 then self.ppmd=0 gks(25,1,0,${mask}) end end`
+    );
+  }
+
+  class ModifierAction extends PremiereActionElement {
+    render() {
+      this.value = "alt";
+      const root = document.createElement("div");
+      root.className = "pp-root";
+      root.innerHTML = `
+        <label class="pp-field">
+          <span>Hold</span>
+          <select class="pp-input pp-action">
+            ${MODIFIERS.map((m) => `<option value="${m.value}">${m.label}</option>`).join("")}
+          </select>
+        </label>
+        <div class="pp-note">
+          The key is held down while this Grid button is held - use it
+          with the mouse for alt-drag duplicating, shift multi-select
+          and similar gestures. Premiere must be the focused app.
+        </div>`;
+      this.appendChild(root);
+      this.sel = root.querySelector(".pp-action");
+      this.sel.addEventListener("change", () => {
+        this.value = this.sel.value;
+        this.commit();
+      });
+    }
+
+    fromScript(script) {
+      const s = norm(script);
+      const found = MODIFIERS.find((m) => norm(modifierScript(m.mask)) === s);
+      this.value = found ? found.value : "alt";
+      if (this.sel) this.sel.value = this.value;
+    }
+
+    toScript() {
+      const m = MODIFIERS.find((x) => x.value === this.value) ?? MODIFIERS[0];
+      return modifierScript(m.mask);
+    }
+  }
+
+  // --- Timeline Zoom ---------------------------------------------------
+  // Endless knob: types Premiere's zoom shortcut (= / -) once per
+  // detent step, clamped so a violent twist cannot flood keystrokes.
+  function zoomScript(steps) {
+    return (
+      "local d=(((self.epst and self:epst()) or (self.est and self:est()) or 64)-64)*" +
+      steps +
+      " if d~=0 then local k=46 if d<0 then k=45 d=-d end " +
+      "if d>10 then d=10 end for i=1,d do gks(25,0,2,k) end end"
+    );
+  }
+
+  class ZoomAction extends PremiereActionElement {
+    render() {
+      this.steps = 1;
+      const root = document.createElement("div");
+      root.className = "pp-root";
+      root.innerHTML = `
+        <label class="pp-field">
+          <span>Steps / detent</span>
+          <input class="pp-input pp-steps" type="number" min="1" max="10" value="1" />
+        </label>
+        <div class="pp-note">
+          Zooms the Premiere timeline (= and - shortcuts) as you turn
+          this endless knob. Premiere must be the focused app.
+        </div>`;
+      this.appendChild(root);
+      this.stepsInput = root.querySelector(".pp-steps");
+      this.stepsInput.addEventListener("input", () => {
+        this.steps = Math.max(
+          1,
+          Math.min(10, Number(this.stepsInput.value) || 1),
+        );
+        this.commit();
+      });
+    }
+
+    fromScript(script) {
+      const m = script.match(/or 64\)-64\)\*(\d+)/);
+      this.steps = m ? Number(m[1]) : 1;
+      if (this.stepsInput) this.stepsInput.value = String(this.steps);
+    }
+
+    toScript() {
+      return zoomScript(this.steps);
+    }
+  }
+
   // --- Timecode Display ------------------------------------------------
   // No parameters; the block carries its own draw-event Lua. The UI is
   // a placement note, since this one only makes sense on the screen
@@ -323,6 +593,13 @@
     ["premiere-marker-action", MarkerAction],
     ["premiere-inout-action", InOutAction],
     ["premiere-timecode-action", TimecodeAction],
+    ["premiere-tool-action", ToolAction],
+    ["premiere-phead-action", PlayheadAction],
+    ["premiere-clip-action", ClipAction],
+    ["premiere-project-action", ProjectAction],
+    ["premiere-view-action", ViewAction],
+    ["premiere-modifier-action", ModifierAction],
+    ["premiere-zoom-action", ZoomAction],
     ["premiere-preference", PreferenceElement],
   ];
   for (const [tag, cls] of defs) {

@@ -383,6 +383,78 @@ exports.loadPackage = async function (gridController, persistedData) {
     actionComponent: "premiere-timecode-action",
   });
 
+  // Tool / Playhead / Clip / Project / View / Modifier / Zoom - the
+  // command blocks. Their defaults must generate the same Lua as the
+  // corresponding components (whitespace-insensitively), since the
+  // dropdowns recognize options by regenerating and comparing scripts.
+  createAction({
+    short: "xpptool",
+    displayName: "Tool",
+    defaultLua:
+      "if self:bst()>0 then if self.pptool~=1 then self.pptool=1 " +
+      "gks(25,0,2,25) end else self.pptool=0 end",
+    actionComponent: "premiere-tool-action",
+  });
+
+  createAction({
+    short: "xpphd",
+    displayName: "Playhead Edit",
+    defaultLua:
+      "if self:bst()>0 then if self.pphd~=1 then self.pphd=1 " +
+      'gps("package-premiere-pro", "phead", "select") end ' +
+      "else self.pphd=0 end",
+    actionComponent: "premiere-phead-action",
+  });
+
+  createAction({
+    short: "xppcl",
+    displayName: "Clip",
+    defaultLua:
+      "if self:bst()>0 then if self.ppcl~=1 then self.ppcl=1 " +
+      'gps("package-premiere-pro", "clipop", "toggle") end ' +
+      "else self.ppcl=0 end",
+    actionComponent: "premiere-clip-action",
+  });
+
+  createAction({
+    short: "xpppj",
+    displayName: "Project",
+    defaultLua:
+      "if self:bst()>0 then if self.pppr~=1 then self.pppr=1 " +
+      'gps("package-premiere-pro", "project", "save") end ' +
+      "else self.pppr=0 end",
+    actionComponent: "premiere-project-action",
+  });
+
+  createAction({
+    short: "xppvw",
+    displayName: "View",
+    defaultLua:
+      "if self:bst()>0 then if self.ppvw~=1 then self.ppvw=1 " +
+      "gks(25,0,2,22) end else self.ppvw=0 end",
+    actionComponent: "premiere-view-action",
+  });
+
+  createAction({
+    short: "xppmd",
+    displayName: "Modifier Hold",
+    defaultLua:
+      "if self:bst()>0 then if self.ppmd~=1 then self.ppmd=1 " +
+      "gks(25,1,1,4) end else " +
+      "if self.ppmd==1 then self.ppmd=0 gks(25,1,0,4) end end",
+    actionComponent: "premiere-modifier-action",
+  });
+
+  createAction({
+    short: "xppzm",
+    displayName: "Timeline Zoom",
+    defaultLua:
+      "local d=(((self.epst and self:epst()) or (self.est and self:est()) or 64)-64)*1 " +
+      "if d~=0 then local k=46 if d<0 then k=45 d=-d end " +
+      "if d>10 then d=10 end for i=1,d do gks(25,0,2,k) end end",
+    actionComponent: "premiere-zoom-action",
+  });
+
   startServer();
   notifyStatusChange();
 };
@@ -478,6 +550,24 @@ exports.sendMessage = async function (args) {
   if (group === "inout") {
     // args: ["inout", "in" | "out" | "clear"]
     sendToPanel({ cmd: "inout", action: String(args[1] ?? "in") });
+    return;
+  }
+
+  if (group === "phead") {
+    // args: ["phead", "select"] - playhead-scoped edits via the API.
+    sendToPanel({ cmd: "phead", action: String(args[1] ?? "select") });
+    return;
+  }
+
+  if (group === "clipop") {
+    // args: ["clipop", "toggle" | "delete"] - selection-scoped edits.
+    sendToPanel({ cmd: "clipop", action: String(args[1] ?? "toggle") });
+    return;
+  }
+
+  if (group === "project") {
+    // args: ["project", "save"]
+    sendToPanel({ cmd: "project", action: String(args[1] ?? "save") });
     return;
   }
 };

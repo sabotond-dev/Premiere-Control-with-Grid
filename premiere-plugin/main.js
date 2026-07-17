@@ -140,6 +140,21 @@ function dispatch(command) {
     runInOut(String(command.action || "in"));
     return;
   }
+
+  if (command.cmd === "phead") {
+    runPlayheadOp(String(command.action || "select"));
+    return;
+  }
+
+  if (command.cmd === "clipop") {
+    runClipOp(String(command.action || "toggle"));
+    return;
+  }
+
+  if (command.cmd === "project") {
+    runProjectOp(String(command.action || "save"));
+    return;
+  }
 }
 
 // --- Premiere access -------------------------------------------------
@@ -257,6 +272,104 @@ async function runInOut(action) {
         compound.addAction(seq.createSetOutPointAction(end));
       }, "Clear in/out");
     }
+  } catch (e) {
+    sendError(e);
+  }
+}
+
+// --- Playhead / clip / project commands (API-backed blocks) ----------
+
+async function clipsUnderPlayhead(seq) {
+  const pos = (await seq.getPlayerPosition()).ticksNumber;
+  const clipType =
+    (ppro.Constants &&
+      ppro.Constants.TrackItemType &&
+      ppro.Constants.TrackItemType.CLIP) ??
+    1;
+  const under = [];
+
+  async function scanTrack(track) {
+    if (!track) return;
+    const items = (await track.getTrackItems(clipType, false)) || [];
+    for (const item of items) {
+      const start = (await item.getStartTime()).ticksNumber;
+      const end = (await item.getEndTime()).ticksNumber;
+      if (pos >= start && pos < end) under.push(item);
+    }
+  }
+
+  const vCount = await seq.getVideoTrackCount();
+  for (let i = 0; i < vCount; i++) await scanTrack(await seq.getVideoTrack(i));
+  const aCount = await seq.getAudioTrackCount();
+  for (let i = 0; i < aCount; i++) await scanTrack(await seq.getAudioTrack(i));
+  return under;
+}
+
+async function runPlayheadOp(action) {
+  try {
+    if (action !== "select") return;
+    const { seq } = await activeSequence();
+    if (!seq) return sendError("No active sequence");
+
+    const under = await clipsUnderPlayhead(seq);
+    if (under.length === 0) return;
+    ppro.TrackItemSelection.createEmptySelection((selection) => {
+      for (const item of under) selection.addItem(item, false);
+      seq.setSelection(selection);
+    });
+  } catch (e) {
+    sendError(e);
+  }
+}
+
+async function runClipOp(action) {
+  try {
+    const { project, seq } = await activeSequence();
+    if (!seq) return sendError("No active sequence");
+    const selection = await seq.getSelection();
+    const items = selection ? await selection.getTrackItems() : [];
+    if (!items || items.length === 0) return sendError("No clip selected");
+
+    if (action === "toggle") {
+      const actions = [];
+      for (const item of items) {
+        const disabled = await item.isDisabled();
+        actions.push(item.createSetDisabledAction(!disabled));
+      }
+      project.executeTransaction((compound) => {
+        for (const a of actions) compound.addAction(a);
+      }, "Toggle clip enable");
+      return;
+    }
+
+    if (action === "delete") {
+      const editor = await ppro.SequenceEditor.getEditor(seq);
+      const mediaType =
+        (ppro.Constants &&
+          ppro.Constants.MediaType &&
+          (ppro.Constants.MediaType.ANY ?? ppro.Constants.MediaType.ALL)) ??
+        undefined;
+      const removeAction = editor.createRemoveItemsAction(
+        selection,
+        false,
+        mediaType,
+        false,
+      );
+      project.executeTransaction((compound) => {
+        compound.addAction(removeAction);
+      }, "Delete clips");
+    }
+  } catch (e) {
+    sendError(e);
+  }
+}
+
+async function runProjectOp(action) {
+  try {
+    if (action !== "save") return;
+    const { project } = await activeSequence();
+    if (!project) return sendError("No open project");
+    await project.save();
   } catch (e) {
     sendError(e);
   }
