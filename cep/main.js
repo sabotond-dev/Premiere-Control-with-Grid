@@ -113,10 +113,52 @@ var pendingDelta = 0;
 var pendingCommands = [];
 var lastHostReload = 0;
 
+// --- Timing stats ----------------------------------------------------
+// Where do jog milliseconds go? Measured per eval: how long the delta
+// waited in the queue (engine busy) and how long the eval itself took.
+// Aggregates are sent to the editor every few seconds when there was
+// activity; the editor appends them to a local log file.
+var stats = null;
+
+function statsReset() {
+  stats = {
+    jogN: 0, jogEvalMs: 0, jogEvalMax: 0, jogWaitMs: 0, jogWaitMax: 0,
+    pollN: 0, pollEvalMs: 0, pollEvalMax: 0
+  };
+}
+statsReset();
+
+var firstPendingAt = 0; // when the oldest un-evaled jog delta arrived
+
+function statsJog(waitMs, evalMs) {
+  stats.jogN++;
+  stats.jogEvalMs += evalMs;
+  stats.jogWaitMs += waitMs;
+  if (evalMs > stats.jogEvalMax) stats.jogEvalMax = evalMs;
+  if (waitMs > stats.jogWaitMax) stats.jogWaitMax = waitMs;
+}
+
+setInterval(function () {
+  if (stats.jogN === 0 && stats.pollN === 0) return;
+  send({
+    type: "stats",
+    jogN: stats.jogN,
+    jogEvalAvg: stats.jogN ? Math.round(stats.jogEvalMs / stats.jogN) : 0,
+    jogEvalMax: stats.jogEvalMax,
+    jogWaitAvg: stats.jogN ? Math.round(stats.jogWaitMs / stats.jogN) : 0,
+    jogWaitMax: stats.jogWaitMax,
+    pollN: stats.pollN,
+    pollEvalAvg: stats.pollN ? Math.round(stats.pollEvalMs / stats.pollN) : 0,
+    pollEvalMax: stats.pollEvalMax
+  });
+  statsReset();
+}, 3000);
+
 function pump() {
   if (evalBusy || !hostLoaded) return;
 
   var script = null;
+  var isJog = false;
   if (pendingDelta !== 0) {
     var d = pendingDelta;
     pendingDelta = 0;
@@ -124,15 +166,21 @@ function pump() {
     if (d > 2000) d = 2000;
     if (d < -2000) d = -2000;
     script = "gridTimeline(" + d + ")";
+    isJog = true;
   } else if (pendingCommands.length > 0) {
     script = pendingCommands.shift();
   } else {
     return;
   }
 
+  var waitMs = isJog && firstPendingAt ? Date.now() - firstPendingAt : 0;
+  if (isJog) firstPendingAt = 0;
+  var evalStart = Date.now();
+
   evalBusy = true;
   cs.evalScript(script, function (result) {
     evalBusy = false;
+    if (isJog) statsJog(waitMs, Date.now() - evalStart);
     handleResult(script, result);
     // More may have accumulated while we were busy.
     pump();
@@ -188,8 +236,10 @@ var JOG_QUIET_MS = 800;
 var lastPlayheadKey = null;
 var lastJogAt = 0;
 var pollMoving = false;
+var readoutEnabled = true;
 
 function reportPlayhead(ticks, tpf) {
+  if (!readoutEnabled) return;
   var key = String(ticks) + "/" + String(tpf);
   if (key === lastPlayheadKey) return;
   lastPlayheadKey = key;
@@ -203,6 +253,7 @@ function reportNoSequence() {
 }
 
 function pollPlayhead() {
+  if (!readoutEnabled) return;
   if (!connected || !hostLoaded || evalBusy) return;
   // Commands and jog deltas always win; the poll takes the leftovers.
   if (pendingDelta !== 0 || pendingCommands.length > 0) return;
@@ -211,9 +262,14 @@ function pollPlayhead() {
   // full eval round-trip, which reads as knob lag. Jog evals report
   // the playhead themselves, so nothing is lost.
   if (Date.now() - lastJogAt < JOG_QUIET_MS) return;
+  var evalStart = Date.now();
   evalBusy = true;
   cs.evalScript("gridPlayhead()", function (result) {
     evalBusy = false;
+    var dur = Date.now() - evalStart;
+    stats.pollN++;
+    stats.pollEvalMs += dur;
+    if (dur > stats.pollEvalMax) stats.pollEvalMax = dur;
     if (result === "EvalScript error.") {
       hostLost("gridPlayhead()");
     } else {
@@ -246,10 +302,20 @@ setTimeout(pollTick, POLL_IDLE_MS);
 function dispatch(command) {
   if (!command || !command.cmd) return;
 
+  if (command.cmd === "readout") {
+    // Editor-controlled master switch: disabled = zero polls, zero
+    // reports - the exact pre-readout panel behavior.
+    readoutEnabled = !!command.enabled;
+    lastPlayheadKey = null;
+    logLine("readout " + (readoutEnabled ? "on" : "off"));
+    return;
+  }
+
   if (command.cmd === "timeline") {
     var d = Number(command.delta);
     if (!isFinite(d) || d === 0) return;
     lastJogAt = Date.now();
+    if (pendingDelta === 0) firstPendingAt = Date.now();
     pendingDelta += d;
   } else if (command.cmd === "marker") {
     pendingCommands.push('gridMarker("' + String(command.action || "add") + '")');

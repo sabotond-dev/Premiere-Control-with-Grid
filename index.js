@@ -160,6 +160,9 @@ function startServer() {
     }
     panelSocket = socket;
     isPanelConnected = true;
+    // Tell the panel whether to run the readout at all: disabled means
+    // zero polls and zero reports - the exact pre-readout behavior.
+    sendToPanel({ cmd: "readout", enabled: screenEnabled });
     notifyStatusChange();
 
     socket.setEncoding("utf-8");
@@ -218,6 +221,15 @@ function handlePanelData(chunk) {
           message: `Premiere: ${msg.message}`,
           messageType: "fail",
         });
+      } else if (msg.type === "stats") {
+        // Timing telemetry from the panel (eval durations, queue
+        // waits). Appended to a local file for diagnosing knob feel.
+        try {
+          fs.appendFileSync(
+            "C:\\Users\\sabot\\AppData\\Local\\Temp\\pp-stats.log",
+            new Date().toISOString() + " " + JSON.stringify(msg) + "\n",
+          );
+        } catch (e) {}
       } else if (msg.type === "playhead") {
         if (msg.none) {
           queueTimecode("--:--:--:--");
@@ -337,6 +349,7 @@ exports.addMessagePort = async function (port, senderId) {
           type: "persist-data",
           data: { screenReadout: screenEnabled },
         });
+        sendToPanel({ cmd: "readout", enabled: screenEnabled });
         if (!screenEnabled) {
           clearTimecode();
         } else if (lastTc !== undefined) {
