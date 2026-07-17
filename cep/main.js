@@ -141,7 +141,9 @@ function handleResult(script, result) {
 // stream of position reports.
 
 var POLL_MS = 200;
+var JOG_QUIET_MS = 400;
 var lastPlayheadKey = null;
+var lastJogAt = 0;
 
 function reportPlayhead(ticks, tpf) {
   var key = String(ticks) + "/" + String(tpf);
@@ -160,6 +162,11 @@ function pollPlayhead() {
   if (!connected || !hostLoaded || evalBusy) return;
   // Commands and jog deltas always win; the poll takes the leftovers.
   if (pendingDelta !== 0 || pendingCommands.length > 0) return;
+  // Stay off the (single) ExtendScript engine while the user is
+  // jogging: a poll in flight would make the next jog delta wait a
+  // full eval round-trip, which reads as knob lag. Jog evals report
+  // the playhead themselves, so nothing is lost.
+  if (Date.now() - lastJogAt < JOG_QUIET_MS) return;
   evalBusy = true;
   cs.evalScript("gridPlayhead()", function (result) {
     evalBusy = false;
@@ -190,6 +197,7 @@ function dispatch(command) {
   if (command.cmd === "timeline") {
     var d = Number(command.delta);
     if (!isFinite(d) || d === 0) return;
+    lastJogAt = Date.now();
     pendingDelta += d;
   } else if (command.cmd === "marker") {
     pendingCommands.push('gridMarker("' + String(command.action || "add") + '")');

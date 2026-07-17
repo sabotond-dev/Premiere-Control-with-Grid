@@ -30,6 +30,7 @@ const SCREEN_W = 320;
 const SCREEN_H = 240;
 const TC_SIZE = 24; // glyph height; stock face advance is size-2 px
 const DRAW_MIN_MS = 100; // max ~10 screen updates per second
+const JOG_QUIET_MS = 250; // no draws while jog events are streaming
 
 let controller;
 let preferenceMessagePort = undefined;
@@ -52,6 +53,7 @@ let lastTc = undefined;
 let pendingTc = undefined;
 let drawTimer = undefined;
 let lastDrawAt = 0;
+let lastJogAt = 0;
 let screenDirty = false;
 
 function notifyStatusChange() {
@@ -119,21 +121,31 @@ function clearScreen() {
 
 // Trailing-edge throttle: bursts (playback, fast jogs) collapse to at
 // most one immediate-Lua packet per DRAW_MIN_MS, and the final
-// position always lands.
+// position always lands. While jog events are streaming the draw is
+// deferred entirely - the drawing happens on the same module whose
+// encoder produces the jog events, and a full-frame paint per detent
+// makes the knob feel laggy. The timecode lands right after the twist.
 function queueTimecode(tc) {
   if (tc === lastTc) return;
   lastTc = tc;
   if (!screenEnabled) return;
   pendingTc = tc;
+  scheduleDraw(DRAW_MIN_MS - (Date.now() - lastDrawAt));
+}
+
+function scheduleDraw(delayMs) {
   if (drawTimer) return;
-  const wait = Math.max(0, DRAW_MIN_MS - (Date.now() - lastDrawAt));
   drawTimer = setTimeout(() => {
     drawTimer = undefined;
-    if (pendingTc !== undefined && screenEnabled) {
-      drawTimecode(pendingTc);
-      pendingTc = undefined;
+    if (pendingTc === undefined || !screenEnabled) return;
+    const sinceJog = Date.now() - lastJogAt;
+    if (sinceJog < JOG_QUIET_MS) {
+      scheduleDraw(JOG_QUIET_MS - sinceJog);
+      return;
     }
-  }, wait);
+    drawTimecode(pendingTc);
+    pendingTc = undefined;
+  }, Math.max(0, delayMs));
 }
 
 // Send one newline-delimited JSON command to the CEP panel. Silently
@@ -365,6 +377,7 @@ exports.sendMessage = async function (args) {
       delta = Number(args[1]);
     }
     if (!isFinite(delta) || delta === 0) return;
+    lastJogAt = Date.now();
     if (delta > 240) delta = 240;
     if (delta < -240) delta = -240;
     sendToPanel({ cmd: "timeline", delta });
