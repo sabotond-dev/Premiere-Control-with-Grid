@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Grid Control</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: "Inter", -apple-system, system-ui, sans-serif;
+        background: #151515;
+        color: #ededed;
+        font-size: 12px;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 13px;
+        font-weight: 600;
+        margin: 0 0 10px;
+        letter-spacing: 0.02em;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        flex: none;
+      }
+      .on {
+        background: #14ce96;
+      }
+      .off {
+        background: #c04a4a;
+      }
+      .hint {
+        font-size: 11px;
+        line-height: 1.5;
+        color: #9d9d9d;
+        margin: 0 0 10px;
+      }
+      #log {
+        font-family: Consolas, monospace;
+        font-size: 10.5px;
+        line-height: 1.5;
+        color: #9d9d9d;
+        white-space: pre-wrap;
+        background: #0e0e0e;
+        border: 1px solid #2e2e2e;
+        border-radius: 6px;
+        padding: 8px;
+        height: 120px;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Grid Control</h1>
+    <div class="row">
+      <span id="dot" class="dot off"></span>
+      <span id="status">Waiting for Grid Editor…</span>
+    </div>
+    <p class="hint">
+      Keep this panel open while you work. It drives the active
+      sequence's playhead, markers and in/out points from your Grid
+      modules, using Premiere's own scripting API.
+    </p>
+    <div id="log"></div>
+
+    <script src="CSInterface.js"></script>
+    <script src="main.js"></script>
+  </body>
+</html>
