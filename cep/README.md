@@ -32,9 +32,15 @@ dot turns green when the Grid Editor package is running.
 | Timeline  | `getPlayerPosition` / `setPlayerPosition`       |
 | Marker    | `sequence.markers.createMarker` / iterate       |
 | In / Out  | `sequence.setInPoint` / `setOutPoint`           |
+| Playhead  | `getPlayerPosition`, polled for the readout     |
 
 All frame math uses the sequence timebase, so a detent is exactly N
 frames at any frame rate.
+
+The playhead poll runs every 200 ms, only while the eval queue is idle
+(commands and jog deltas always go first), and only reports actual
+changes back to the editor. The editor side uses it to draw a timecode
+readout on the VSN1 module screen.
 
 ## Signing for release
 

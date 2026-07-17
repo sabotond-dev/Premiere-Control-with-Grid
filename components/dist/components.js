@@ -201,6 +201,12 @@
           <span class="pp-dot pp-off"></span>
           <span class="pp-state">Premiere panel not connected</span>
         </div>
+        <label class="pp-field" style="cursor:pointer;">
+          <input type="checkbox" class="pp-screen" checked
+            style="accent-color:#14ce96;flex:none;" />
+          <span style="min-width:0;">Show playhead timecode on the module
+            screen (VSN1)</span>
+        </label>
         <div class="pp-note">
           <ol class="pp-steps" style="padding-left:16px;margin:6px 0;">
             <li>Install the Grid Control extension into Premiere's CEP
@@ -210,17 +216,31 @@
           </ol>
           The connection is local only (<span class="pp-code">127.0.0.1:23120</span>).
           Timeline, marker and in/out commands run through Premiere's own
-          scripting API — no keyboard emulation.
+          scripting API — no keyboard emulation. With the readout enabled
+          the VSN1 screen shows the playhead as
+          <span class="pp-code">hh:mm:ss:ff</span>; the current value is
+          also published to module Lua as the global
+          <span class="pp-code">pptc</span> for custom draw events.
         </div>`;
       this.appendChild(root);
       this.dot = root.querySelector(".pp-dot");
       this.state = root.querySelector(".pp-state");
+      this.screenToggle = root.querySelector(".pp-screen");
+      this.screenToggle.addEventListener("change", () => {
+        this.port?.postMessage({
+          type: "set-screen-readout",
+          enabled: this.screenToggle.checked,
+        });
+      });
 
       try {
         this.port = window.createPackageMessagePort(PKG, "premiere-preference");
         this.port.onmessage = (e) => {
           if (e.data?.type === "status") {
             this.setConnected(!!e.data.isPanelConnected);
+            if (this.screenToggle) {
+              this.screenToggle.checked = e.data.screenReadout !== false;
+            }
           }
         };
         this.port.start?.();

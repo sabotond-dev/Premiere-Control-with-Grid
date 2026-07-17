@@ -102,17 +102,21 @@ function pump() {
   });
 }
 
+// The host either lost our functions or the engine hiccuped.
+// Reload host.jsx (throttled) so one bad stretch logs once.
+function hostLost(script) {
+  var now = Date.now();
+  if (now - lastHostReload > 3000) {
+    lastHostReload = now;
+    hostLoaded = false;
+    logLine("host lost, reloading (" + script + ")");
+    loadHost();
+  }
+}
+
 function handleResult(script, result) {
   if (result === "EvalScript error.") {
-    // The host either lost our functions or the engine hiccuped.
-    // Reload host.jsx (throttled) and report once.
-    var now = Date.now();
-    if (now - lastHostReload > 3000) {
-      lastHostReload = now;
-      hostLoaded = false;
-      logLine("host lost, reloading (" + script + ")");
-      loadHost();
-    }
+    hostLost(script);
     return;
   }
   try {
@@ -120,11 +124,64 @@ function handleResult(script, result) {
     if (parsed.ok === false) {
       logLine("error: " + (parsed.message || "unknown"));
       send({ type: "error", message: parsed.message || "unknown" });
+    } else if (parsed.ticks && parsed.tpf) {
+      // A timeline jog just moved the playhead; report it right away
+      // so the module screen tracks the knob without poll latency.
+      reportPlayhead(parsed.ticks, parsed.tpf);
     }
   } catch (e) {
     logLine("odd result: " + String(result).slice(0, 80));
   }
 }
+
+// --- Playhead readout ------------------------------------------------
+// Premiere has no push event for playhead movement in CEP, so poll it
+// whenever the eval queue is idle. Deduped here, so the editor only
+// hears about actual changes; scrubbing and playback both surface as a
+// stream of position reports.
+
+var POLL_MS = 200;
+var lastPlayheadKey = null;
+
+function reportPlayhead(ticks, tpf) {
+  var key = String(ticks) + "/" + String(tpf);
+  if (key === lastPlayheadKey) return;
+  lastPlayheadKey = key;
+  send({ type: "playhead", ticks: String(ticks), tpf: Number(tpf) });
+}
+
+function reportNoSequence() {
+  if (lastPlayheadKey === "none") return;
+  lastPlayheadKey = "none";
+  send({ type: "playhead", none: true });
+}
+
+function pollPlayhead() {
+  if (!connected || !hostLoaded || evalBusy) return;
+  // Commands and jog deltas always win; the poll takes the leftovers.
+  if (pendingDelta !== 0 || pendingCommands.length > 0) return;
+  evalBusy = true;
+  cs.evalScript("gridPlayhead()", function (result) {
+    evalBusy = false;
+    if (result === "EvalScript error.") {
+      hostLost("gridPlayhead()");
+    } else {
+      try {
+        var parsed = JSON.parse(result);
+        if (parsed.ok && parsed.none) {
+          reportNoSequence();
+        } else if (parsed.ok && parsed.ticks) {
+          reportPlayhead(parsed.ticks, parsed.tpf);
+        }
+      } catch (e) {
+        /* odd poll answers are not worth logging every 200ms */
+      }
+    }
+    pump();
+  });
+}
+
+setInterval(pollPlayhead, POLL_MS);
 
 // Run one command from the editor against the host.
 function dispatch(command) {
@@ -164,6 +221,9 @@ function connect() {
 
   socket.connect(BRIDGE_PORT, BRIDGE_HOST, function () {
     connected = true;
+    // Re-send the playhead on a fresh connection: a restarted editor
+    // has no idea where the timeline is until something changes.
+    lastPlayheadKey = null;
     setStatus("Connected to Grid Editor", true);
     logLine("connected");
   });

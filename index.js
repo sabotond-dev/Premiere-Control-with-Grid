@@ -14,8 +14,22 @@ const fs = require("fs");
 const path = require("path");
 
 // The port the CEP panel connects to. Kept distinct from the
-// Lightroom package's ports so both can run side by side.
-const BRIDGE_PORT = 23120;
+// Lightroom package's ports so both can run side by side. The env
+// override exists so tests can run while a real editor instance holds
+// the default port.
+const BRIDGE_PORT = Number(process.env.GRID_PP_BRIDGE_PORT) || 23120;
+
+// Premiere's fixed tick rate; frame math mirrors host.jsx.
+const TICKS_PER_SECOND = 254016000000;
+
+// VSN1 display geometry and readout layout. The gui_draw_* Lua globals
+// take a screen index, so no element context is needed, and the
+// `if ggdsw` guard makes the script a silent no-op on modules without
+// a screen (broadcast reaches every module in the chain).
+const SCREEN_W = 320;
+const SCREEN_H = 240;
+const TC_SIZE = 24; // glyph height; stock face advance is size-2 px
+const DRAW_MIN_MS = 100; // max ~10 screen updates per second
 
 let controller;
 let preferenceMessagePort = undefined;
@@ -29,11 +43,97 @@ let isPanelConnected = false;
 let lastLegacyValue = undefined;
 let legacyWarned = false;
 
+// Playhead readout state. lastTc is the last timecode the panel
+// reported; pendingTc waits on the throttle timer; screenDirty tracks
+// whether the module screen currently shows our drawing (so the clear
+// on disconnect/disable only fires when there is something to clear).
+let screenEnabled = true;
+let lastTc = undefined;
+let pendingTc = undefined;
+let drawTimer = undefined;
+let lastDrawAt = 0;
+let screenDirty = false;
+
 function notifyStatusChange() {
   preferenceMessagePort?.postMessage({
     type: "status",
     isPanelConnected,
+    screenReadout: screenEnabled,
   });
+}
+
+// hh:mm:ss:ff from Premiere ticks + ticks-per-frame. Non-drop-frame:
+// on 29.97/59.94 drop-frame sequences this can drift a touch from
+// Premiere's own display, which is fine for a hardware readout.
+function formatTimecode(ticksStr, tpf) {
+  const ticks = Number(ticksStr);
+  if (!isFinite(ticks) || !isFinite(tpf) || tpf <= 0) return undefined;
+  const fps = Math.max(1, Math.round(TICKS_PER_SECOND / tpf));
+  const frames = Math.max(0, Math.round(ticks / tpf));
+  const ff = frames % fps;
+  let s = Math.floor(frames / fps);
+  const ss = s % 60;
+  s = Math.floor(s / 60);
+  const mm = s % 60;
+  const hh = Math.floor(s / 60);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(hh)}:${p(mm)}:${p(ss)}:${p(ff)}`;
+}
+
+// Paint the whole screen, not just a strip: the display is double
+// buffered, so partial drawing would alternate with stale frames of
+// whatever the profile drew last. Owning the full frame keeps it
+// steady. pptc is also published as a module global for users who
+// disable the built-in readout and render it from their own draw event.
+function drawTimecode(tc) {
+  lastDrawAt = Date.now();
+  screenDirty = true;
+  const width = tc.length * (TC_SIZE - 2) - (TC_SIZE >> 3);
+  const x = Math.max(0, (SCREEN_W - width) >> 1);
+  const y = (SCREEN_H - TC_SIZE) >> 1;
+  controller?.sendMessageToEditor({
+    type: "execute-lua-script",
+    script:
+      `pptc='${tc}' if ggdsw then ` +
+      `ggdaf(0,0,0,${SCREEN_W - 1},${SCREEN_H - 1},{0,0,0}) ` +
+      `ggdt(0,'${tc}',${x},${y},${TC_SIZE},{255,255,255}) ` +
+      `ggdsw(0) end`,
+  });
+}
+
+function clearScreen() {
+  if (drawTimer) {
+    clearTimeout(drawTimer);
+    drawTimer = undefined;
+  }
+  pendingTc = undefined;
+  if (!screenDirty) return;
+  screenDirty = false;
+  controller?.sendMessageToEditor({
+    type: "execute-lua-script",
+    script:
+      "pptc=nil if ggdsw then " +
+      `ggdaf(0,0,0,${SCREEN_W - 1},${SCREEN_H - 1},{0,0,0}) ggdsw(0) end`,
+  });
+}
+
+// Trailing-edge throttle: bursts (playback, fast jogs) collapse to at
+// most one immediate-Lua packet per DRAW_MIN_MS, and the final
+// position always lands.
+function queueTimecode(tc) {
+  if (tc === lastTc) return;
+  lastTc = tc;
+  if (!screenEnabled) return;
+  pendingTc = tc;
+  if (drawTimer) return;
+  const wait = Math.max(0, DRAW_MIN_MS - (Date.now() - lastDrawAt));
+  drawTimer = setTimeout(() => {
+    drawTimer = undefined;
+    if (pendingTc !== undefined && screenEnabled) {
+      drawTimecode(pendingTc);
+      pendingTc = undefined;
+    }
+  }, wait);
 }
 
 // Send one newline-delimited JSON command to the CEP panel. Silently
@@ -69,6 +169,10 @@ function startServer() {
       if (panelSocket === socket) {
         panelSocket = undefined;
         isPanelConnected = false;
+        // Premiere went away: take the stale timecode off the screen
+        // and forget it, so a reconnect always redraws.
+        lastTc = undefined;
+        clearScreen();
         notifyStatusChange();
       }
     });
@@ -114,6 +218,13 @@ function handlePanelData(chunk) {
           message: `Premiere: ${msg.message}`,
           messageType: "fail",
         });
+      } else if (msg.type === "playhead") {
+        if (msg.none) {
+          queueTimecode("--:--:--:--");
+        } else {
+          const tc = formatTimecode(msg.ticks, msg.tpf);
+          if (tc) queueTimecode(tc);
+        }
       }
     } catch (e) {
       // Ignore malformed lines from the panel.
@@ -124,6 +235,7 @@ function handlePanelData(chunk) {
 exports.loadPackage = async function (gridController, persistedData) {
   packageShutDown = false;
   controller = gridController;
+  screenEnabled = persistedData?.screenReadout !== false;
 
   const actionIcon = fs.readFileSync(
     path.resolve(__dirname, "premiere-action-icon.svg"),
@@ -190,6 +302,7 @@ exports.unloadPackage = async function () {
       actionId: --actionId,
     });
   }
+  clearScreen();
   stopServer();
 };
 
@@ -199,6 +312,20 @@ exports.addMessagePort = async function (port, senderId) {
     preferenceMessagePort = port;
     port.on("message", (e) => {
       if (e.data?.type === "request-status") {
+        notifyStatusChange();
+      } else if (e.data?.type === "set-screen-readout") {
+        screenEnabled = !!e.data.enabled;
+        controller?.sendMessageToEditor({
+          type: "persist-data",
+          data: { screenReadout: screenEnabled },
+        });
+        if (!screenEnabled) {
+          clearScreen();
+        } else if (lastTc !== undefined) {
+          // Redraw the last known position right away instead of
+          // waiting for the playhead to move again.
+          drawTimecode(lastTc);
+        }
         notifyStatusChange();
       }
     });

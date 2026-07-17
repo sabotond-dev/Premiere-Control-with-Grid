@@ -43,10 +43,30 @@ function gridTimeline(frames) {
     var next = current + frames * ticksPerFrame;
     if (next < 0) next = 0;
 
-    // Convert the double back to an integer tick string.
+    // Convert the double back to an integer tick string. Returning the
+    // timebase too lets the panel report the new playhead immediately,
+    // without waiting for the next poll.
     var ticksString = next.toFixed(0);
     seq.setPlayerPosition(ticksString);
-    return _ok({ ticks: ticksString });
+    return _ok({ ticks: ticksString, tpf: ticksPerFrame });
+  } catch (e) {
+    return _err(e.toString());
+  }
+}
+
+// Read the playhead for the module-screen readout. Answers ok with
+// none:true when no sequence is open, so the panel's poll loop stays
+// quiet instead of raising errors at the editor.
+function gridPlayhead() {
+  try {
+    var seq = _seq();
+    if (!seq) return _ok({ none: true });
+    var tpf = parseFloat(seq.timebase);
+    if (!tpf || tpf <= 0) return _ok({ none: true });
+    return _ok({
+      ticks: String(seq.getPlayerPosition().ticks),
+      tpf: tpf,
+    });
   } catch (e) {
     return _err(e.toString());
   }
