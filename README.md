@@ -43,11 +43,13 @@ VSN1 screen ◀──Lua──── Grid Editor ◀──TCP (same socket)─�
 ## Playhead readout (VSN1 screen)
 
 The channel also runs backwards: the panel polls the playhead
-(`getPlayerPosition`, every 200 ms while the command queue is idle and
-the knob is untouched, plus instantly after every jog) and reports
-changes over the same socket. The package converts ticks to
-`hh:mm:ss:ff` and keeps the module Lua global `pptc` fresh with a tiny
-immediate script (`pptc='00:01:23:12'`, throttled to ~10/s).
+(`getPlayerPosition`) and reports changes over the same socket. The
+package converts ticks to `hh:mm:ss:ff` and keeps the module Lua
+global `pptc` fresh with a tiny immediate script
+(`pptc='00:01:23:12'`, throttled to ~10/s). Polling is adaptive: once
+a second while the playhead is static, 250 ms while it is moving
+(playback, mouse scrubs), and instant after every jog since the jog
+eval itself returns the new position.
 
 Drawing happens on the module, via the **Timecode Display** action
 block: add it to the screen element's **Draw** event on a VSN1. This is
@@ -69,11 +71,13 @@ Details worth knowing:
 - Timecode is non-drop-frame. On 29.97/59.94 drop-frame sequences the
   frames field can differ slightly from Premiere's display.
 - The readout stays out of scrubbing's way twice over: panel-side,
-  playhead polls pause for 400 ms after each jog delta (jog evals
-  report the position themselves); editor-side, pptc updates are held
-  while jog events stream, because every update makes the display
-  block repaint a full frame on the module being turned. The screen
-  freezes during a twist and catches up ~300 ms after it stops.
+  playhead polls pause for 800 ms after each jog delta (jog evals
+  report the position themselves), and the rare idle polls mean the
+  ExtendScript engine is almost always free when a twist starts;
+  editor-side, pptc updates are held while jog events stream, because
+  every update makes the display block repaint a full frame on the
+  module being turned. The screen freezes during a twist and catches
+  up ~600 ms after it stops.
 
 ## Install (editor side)
 

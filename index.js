@@ -29,7 +29,7 @@ const TICKS_PER_SECOND = 254016000000;
 // and the Timecode Display action block renders it from INSIDE the
 // draw event, where it persists.
 const SEND_MIN_MS = 100; // max ~10 pptc updates per second
-const JOG_QUIET_MS = 300; // hold pptc updates while jog events stream
+const JOG_QUIET_MS = 600; // hold pptc updates while jog events stream
 
 let controller;
 let preferenceMessagePort = undefined;

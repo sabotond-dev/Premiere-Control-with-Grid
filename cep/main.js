@@ -177,10 +177,17 @@ function handleResult(script, result) {
 // hears about actual changes; scrubbing and playback both surface as a
 // stream of position reports.
 
-var POLL_MS = 200;
-var JOG_QUIET_MS = 400;
+// Polling is adaptive: while the playhead is static, polls are rare so
+// the ExtendScript engine is almost always free when a jog starts (an
+// in-flight poll would make the first detent wait a full eval
+// round-trip). Once movement is seen (playback, mouse scrub), polling
+// tightens to follow it.
+var POLL_IDLE_MS = 1000;
+var POLL_ACTIVE_MS = 250;
+var JOG_QUIET_MS = 800;
 var lastPlayheadKey = null;
 var lastJogAt = 0;
+var pollMoving = false;
 
 function reportPlayhead(ticks, tpf) {
   var key = String(ticks) + "/" + String(tpf);
@@ -213,19 +220,27 @@ function pollPlayhead() {
       try {
         var parsed = JSON.parse(result);
         if (parsed.ok && parsed.none) {
+          pollMoving = false;
           reportNoSequence();
         } else if (parsed.ok && parsed.ticks) {
+          var prevKey = lastPlayheadKey;
           reportPlayhead(parsed.ticks, parsed.tpf);
+          pollMoving = lastPlayheadKey !== prevKey;
         }
       } catch (e) {
-        /* odd poll answers are not worth logging every 200ms */
+        /* odd poll answers are not worth logging */
       }
     }
     pump();
   });
 }
 
-setInterval(pollPlayhead, POLL_MS);
+function pollTick() {
+  pollPlayhead();
+  setTimeout(pollTick, pollMoving ? POLL_ACTIVE_MS : POLL_IDLE_MS);
+}
+
+setTimeout(pollTick, POLL_IDLE_MS);
 
 // Run one command from the editor against the host.
 function dispatch(command) {
