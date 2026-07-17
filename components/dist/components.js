@@ -436,7 +436,9 @@
         </label>
         <div class="pp-note">
           Zooms the Premiere timeline (= and - shortcuts) as you turn
-          this endless knob. Premiere must be the focused app.
+          this endless knob. <b>The Timeline panel must have focus</b> -
+          unlike tool shortcuts, Premiere's zoom keys only act on the
+          focused Timeline, so click it once before zooming.
         </div>`;
       this.appendChild(root);
       this.stepsInput = root.querySelector(".pp-steps");

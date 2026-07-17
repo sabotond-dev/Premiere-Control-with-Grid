@@ -313,10 +313,14 @@ async function runPlayheadOp(action) {
 
     const under = await clipsUnderPlayhead(seq);
     if (under.length === 0) return;
-    ppro.TrackItemSelection.createEmptySelection((selection) => {
-      for (const item of under) selection.addItem(item, false);
-      seq.setSelection(selection);
-    });
+
+    // Proven pattern (Adobe premiere-api sample): clear, take the live
+    // selection handle, add items to it, then hand it back to the
+    // sequence. createEmptySelection did not apply from a plugin.
+    await seq.clearSelection();
+    const selection = await seq.getSelection();
+    for (const item of under) selection.addItem(item, false);
+    await seq.setSelection(selection);
   } catch (e) {
     sendError(e);
   }
