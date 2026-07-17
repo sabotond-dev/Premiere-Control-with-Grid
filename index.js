@@ -43,6 +43,35 @@ let isPanelConnected = false;
 let lastLegacyValue = undefined;
 let legacyWarned = false;
 
+// Arrival telemetry for the module->editor leg: if the knob feels
+// laggy while the panel-side evals are fast, the delay is upstream of
+// this process. Aggregates land in the same stats log as the panel's.
+let jogArrivals = 0;
+let jogGapSum = 0;
+let jogGapMax = 0;
+let lastArrivalAt = 0;
+
+setInterval(() => {
+  if (jogArrivals === 0) return;
+  try {
+    fs.appendFileSync(
+      "C:\\Users\\sabot\\AppData\\Local\\Temp\\pp-stats.log",
+      new Date().toISOString() +
+        " " +
+        JSON.stringify({
+          type: "editor-stats",
+          jogN: jogArrivals,
+          gapAvg: Math.round(jogGapSum / Math.max(1, jogArrivals - 1)),
+          gapMax: jogGapMax,
+        }) +
+        "\n",
+    );
+  } catch (e) {}
+  jogArrivals = 0;
+  jogGapSum = 0;
+  jogGapMax = 0;
+}, 3000).unref?.();
+
 // Playhead readout state. lastTc is the last timecode the panel
 // reported; pendingTc waits on the throttle timer; sentAny tracks
 // whether pptc was ever set (so the nil on disconnect/disable only
@@ -398,6 +427,13 @@ exports.sendMessage = async function (args) {
     }
     if (!isFinite(delta) || delta === 0) return;
     lastJogAt = Date.now();
+    if (jogArrivals > 0 && lastArrivalAt) {
+      const gap = lastJogAt - lastArrivalAt;
+      jogGapSum += gap;
+      if (gap > jogGapMax) jogGapMax = gap;
+    }
+    jogArrivals++;
+    lastArrivalAt = lastJogAt;
     if (delta > 240) delta = 240;
     if (delta < -240) delta = -240;
     sendToPanel({ cmd: "timeline", delta });
