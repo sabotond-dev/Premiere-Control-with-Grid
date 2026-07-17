@@ -197,16 +197,14 @@
       root.className = "pp-root";
       root.innerHTML = `
         <div class="pp-note">
-          Shows the Premiere playhead as
-          <span class="pp-code">hh:mm:ss:ff</span> on the module screen,
-          plus the selected clip's filename and track
-          (<span class="pp-code">V1</span>/<span class="pp-code">A2</span>)
-          when a clip is clicked in the timeline. Add this block to the
-          screen element's <b>Draw</b> event on a VSN1. It repaints only
-          when something changes and shows
-          <span class="pp-code">--:--:--:--</span> while Premiere or the
-          panel is closed. Raw values are the module Lua globals
-          <span class="pp-code">pptc</span>,
+          Draws the Premiere status screen on a VSN1: clip name and
+          channel of the clip selected in the timeline, plus the
+          playhead position as <span class="pp-code">hh:mm:ss:ff</span>,
+          each in its own outlined panel. Add this block to the screen
+          element's <b>Draw</b> event. It repaints only when something
+          changes and shows <span class="pp-code">--:--:--:--</span>
+          while Premiere or the panel is closed. Raw values are the
+          module Lua globals <span class="pp-code">pptc</span>,
           <span class="pp-code">ppcn</span> and
           <span class="pp-code">ppct</span> for custom layouts.
         </div>`;
@@ -221,16 +219,19 @@
     toScript() {
       return (
         this._script ??
-        "local t=pptc or '--:--:--:--' local n=ppcn or '' " +
-          "local k=t..n..(ppct or '') " +
+        "local t=pptc or '--:--:--:--' local n=ppcn or '-' " +
+          "local c=ppct or '-' local k=t..n..c " +
           "if self.ldft and k~=self.pptl then self.pptl=k " +
           "self:ldaf(0,0,319,239,{0,0,0}) " +
-          "self:ldft(t,40,84,24,{255,255,255}) " +
-          "if n~='' then " +
-          "local x=(320-#n*14)//2 if x<0 then x=0 end " +
-          "self:ldft(n,x,136,16,{170,170,170}) " +
-          "local c=ppct or '' " +
-          "self:ldft(c,(320-#c*14)//2,166,16,{255,255,255}) end " +
+          "self:ldrr(2,2,317,76,6,{255,255,255}) " +
+          "self:ldft('Clip name',10,8,8,{255,255,255}) " +
+          "self:ldft(n,10,38,16,{255,255,255}) " +
+          "self:ldrr(2,82,317,156,6,{255,255,255}) " +
+          "self:ldft('Channel',10,88,8,{255,255,255}) " +
+          "self:ldft(c,10,114,24,{255,255,255}) " +
+          "self:ldrr(2,162,317,236,6,{255,255,255}) " +
+          "self:ldft('Playhead Position',10,168,8,{255,255,255}) " +
+          "self:ldft(t,10,194,24,{215,255,60}) " +
           "self:ldsw() end"
       );
     }

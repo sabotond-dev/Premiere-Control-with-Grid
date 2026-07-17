@@ -164,15 +164,21 @@ function moduleSafeName(name) {
     .join("")
     .replace(/['"\\]/g, " ")
     .trim();
-  if (s.length > 22) s = s.slice(0, 20) + "..";
+  if (s.length > 21) s = s.slice(0, 18) + "...";
   return s;
+}
+
+// "V2" -> "Video 2", "A1" -> "Audio 1" for the display block.
+function trackLabel(track) {
+  const m = /^([AV])(\d{1,2})$/.exec(String(track));
+  if (!m) return "?";
+  return (m[1] === "A" ? "Audio " : "Video ") + m[2];
 }
 
 function sendClip(msg) {
   const script = msg.none
     ? "ppcn=nil ppct=nil"
-    : `ppcn='${moduleSafeName(msg.name)}' ` +
-      `ppct='${/^[AV]\d{1,2}$/.test(msg.track) ? msg.track : "?"}'`;
+    : `ppcn='${moduleSafeName(msg.name)}' ppct='${trackLabel(msg.track)}'`;
   if (script === lastClipScript) return;
   lastClipScript = script;
   controller?.sendMessageToEditor({ type: "execute-lua-script", script });
@@ -375,27 +381,29 @@ exports.loadPackage = async function (gridController, persistedData) {
     actionComponent: "premiere-inout-action",
   });
 
-  // Timecode Display - goes INSIDE the screen element's draw event so
-  // the profile's own draw loop cannot overwrite it. Shows the playhead
-  // timecode plus, when a clip is selected in the timeline, its name
-  // and track (ppcn / ppct globals). Repaints only when the shown text
-  // changes (self.pptl remembers the last drawn key; resolving the nil
-  // fallbacks FIRST makes the initial dashes draw too), swaps its own
-  // frame, and guards on self.ldft so it is inert off-screen.
+  // Premiere Display - goes INSIDE the screen element's draw event so
+  // the profile's own draw loop cannot overwrite it. Three outlined
+  // panels: clip name, channel, playhead timecode (yellow). Values
+  // come from the pptc / ppcn / ppct globals. Repaints only when the
+  // shown text changes (self.pptl remembers the last drawn key), swaps
+  // its own frame, and guards on self.ldft so it is inert off-screen.
   createAction({
     short: "xpptc",
-    displayName: "Timecode Display",
+    displayName: "Premiere Display",
     defaultLua:
-      "local t=pptc or '--:--:--:--' local n=ppcn or '' " +
-      "local k=t..n..(ppct or '') " +
+      "local t=pptc or '--:--:--:--' local n=ppcn or '-' " +
+      "local c=ppct or '-' local k=t..n..c " +
       "if self.ldft and k~=self.pptl then self.pptl=k " +
       "self:ldaf(0,0,319,239,{0,0,0}) " +
-      "self:ldft(t,40,84,24,{255,255,255}) " +
-      "if n~='' then " +
-      "local x=(320-#n*14)//2 if x<0 then x=0 end " +
-      "self:ldft(n,x,136,16,{170,170,170}) " +
-      "local c=ppct or '' " +
-      "self:ldft(c,(320-#c*14)//2,166,16,{255,255,255}) end " +
+      "self:ldrr(2,2,317,76,6,{255,255,255}) " +
+      "self:ldft('Clip name',10,8,8,{255,255,255}) " +
+      "self:ldft(n,10,38,16,{255,255,255}) " +
+      "self:ldrr(2,82,317,156,6,{255,255,255}) " +
+      "self:ldft('Channel',10,88,8,{255,255,255}) " +
+      "self:ldft(c,10,114,24,{255,255,255}) " +
+      "self:ldrr(2,162,317,236,6,{255,255,255}) " +
+      "self:ldft('Playhead Position',10,168,8,{255,255,255}) " +
+      "self:ldft(t,10,194,24,{215,255,60}) " +
       "self:ldsw() end",
     actionComponent: "premiere-timecode-action",
   });
