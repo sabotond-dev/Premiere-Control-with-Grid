@@ -1,2 +1,5 @@
 node_modules/
 tools/
+package-archive.zip
+my-project-files/
+*.ccx

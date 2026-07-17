@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+  <head>
+    <style>
+      body {
+        margin: 0;
+        padding: 12px;
+        font-family: "Adobe Clean", sans-serif;
+        font-size: 12px;
+        color: #d4d4d4;
+      }
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #c04a4a;
+        flex: none;
+      }
+      .dot.on {
+        background: #14ce96;
+      }
+      .hint {
+        color: #8a8a8a;
+        line-height: 1.5;
+        margin-bottom: 8px;
+      }
+      #log {
+        font-family: monospace;
+        font-size: 10px;
+        color: #8a8a8a;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="status">
+      <div id="dot" class="dot"></div>
+      <span id="status">Waiting for Grid Editor…</span>
+    </div>
+    <div class="hint">
+      Keep this panel open while you work. It drives the active sequence's
+      playhead, markers and in/out points from your Grid modules, and reports
+      the playhead and selected clip back to the module screen.
+    </div>
+    <div id="log"></div>
+    <script src="main.js"></script>
+  </body>
+</html>

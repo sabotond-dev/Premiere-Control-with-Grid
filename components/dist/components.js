@@ -94,13 +94,16 @@
         <div class="pp-note">
           Turn this endless knob to jog the Premiere playhead. Each detent
           moves the frame count above; hold shift-layers or a faster twist
-          cover more ground. Premiere must be open with the Grid panel
-          connected (Window &gt; Extensions &gt; Grid Control).
+          cover more ground. Premiere must be open with the Grid Control
+          plugin panel open (see the package preferences for setup).
         </div>`;
       this.appendChild(root);
       this.framesInput = root.querySelector(".pp-frames");
       this.framesInput.addEventListener("input", () => {
-        const n = Math.max(1, Math.min(240, Number(this.framesInput.value) || 1));
+        const n = Math.max(
+          1,
+          Math.min(240, Number(this.framesInput.value) || 1),
+        );
         this.frames = n;
         this.commit();
       });
@@ -259,19 +262,23 @@
         </label>
         <div class="pp-note">
           <ol class="pp-steps" style="padding-left:16px;margin:6px 0;">
-            <li>Install the Grid Control extension into Premiere's CEP
-              folder (see the package's cep/ README).</li>
-            <li>In Premiere: Window &gt; Extensions &gt; Grid Control.</li>
-            <li>The dot above turns green when the panel connects.</li>
+            <li>Open the plugin folder below and double-click the
+              <span class="pp-code">.ccx</span> file to install the Grid
+              Control plugin into Premiere via Creative Cloud.</li>
+            <li>In Premiere, open the <b>Grid Control</b> panel from the
+              plugins/window menu and keep it open while you work.</li>
+            <li>The dot above turns green when the plugin connects.</li>
           </ol>
-          The connection is local only (<span class="pp-code">127.0.0.1:23120</span>).
+          The connection is local only (<span class="pp-code">ws://127.0.0.1:3543</span>).
           Timeline, marker and in/out commands run through Premiere's own
-          scripting API — no keyboard emulation. To see the playhead on a
-          VSN1 screen, add the <b>Timecode Display</b> block to the screen
-          element's Draw event; this toggle controls whether the
-          <span class="pp-code">pptc</span> value is streamed to the
-          modules at all.
-        </div>`;
+          UXP API — no keyboard emulation. To see the playhead and the
+          selected clip on a VSN1 screen, add the <b>Premiere Display</b>
+          block to the screen element's Draw event; this toggle controls
+          whether the readout values are streamed to the modules at all.
+        </div>
+        <button class="pp-input pp-open-folder" style="cursor:pointer;flex:none;">
+          Open plugin folder (.ccx installer)
+        </button>`;
       this.appendChild(root);
       this.dot = root.querySelector(".pp-dot");
       this.state = root.querySelector(".pp-state");
@@ -281,6 +288,9 @@
           type: "set-screen-readout",
           enabled: this.screenToggle.checked,
         });
+      });
+      root.querySelector(".pp-open-folder").addEventListener("click", () => {
+        this.port?.postMessage({ type: "open-plugin-folder" });
       });
 
       try {

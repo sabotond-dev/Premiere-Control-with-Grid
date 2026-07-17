@@ -2,40 +2,41 @@
 // Editor's package-manager process (Node). It registers the action
 // blocks, receives their gps("package-premiere-pro", ...) calls from
 // the module over serial, and forwards them as commands to the
-// Premiere-side CEP extension over a local TCP socket.
+// Premiere-side UXP plugin over a local WebSocket.
 //
-// Direction: this package is the SERVER. The CEP panel (which has
-// Node integration) connects to it as a client and evaluates the
-// commands through ExtendScript. This mirrors the Lightroom package,
-// only the external half is a CEP extension instead of a .lrplugin.
+// Direction: this package is the SERVER. The UXP plugin connects to it
+// as a client (UXP has no Node and no raw TCP, but standard WebSocket
+// works with a manifest network permission). Same architecture as the
+// Photoshop package, only the host app half is Premiere.
 
-const net = require("net");
 const fs = require("fs");
 const path = require("path");
+const WebSocket = require("ws");
+const openExplorer = require("open-file-explorer");
 
-// The port the CEP panel connects to. Kept distinct from the
-// Lightroom package's ports so both can run side by side. The env
+// The port the UXP plugin connects to. Kept distinct from the
+// Photoshop package's 3542 so both can run side by side. The env
 // override exists so tests can run while a real editor instance holds
 // the default port.
-const BRIDGE_PORT = Number(process.env.GRID_PP_BRIDGE_PORT) || 23120;
+const BRIDGE_PORT = Number(process.env.GRID_PP_BRIDGE_PORT) || 3543;
 
-// Premiere's fixed tick rate; frame math mirrors host.jsx.
+// Premiere's fixed tick rate; frame math mirrors the plugin.
 const TICKS_PER_SECOND = 254016000000;
 
 // The package does not draw on the screen directly: the module profile
 // repaints its own UI from the screen's draw event, so a one-shot frame
 // pushed from outside is overwritten within one draw trigger (~25ms).
-// Instead only the pptc global is kept fresh (a tiny immediate script),
-// and the Timecode Display action block renders it from INSIDE the
-// draw event, where it persists.
+// Instead only the pptc/ppcn/ppct globals are kept fresh (tiny
+// immediate scripts), and the Premiere Display action block renders
+// them from INSIDE the draw event, where they persist.
 const SEND_MIN_MS = 100; // max ~10 pptc updates per second
 const JOG_QUIET_MS = 600; // hold pptc updates while jog events stream
 
 let controller;
 let preferenceMessagePort = undefined;
 
-let server; // net.Server
-let panelSocket = undefined; // the connected CEP panel, if any
+let wss = undefined; // WebSocket.Server
+let panelWs = undefined; // the connected UXP plugin, if any
 let packageShutDown = false;
 let actionId = 0;
 
@@ -43,36 +44,7 @@ let isPanelConnected = false;
 let lastLegacyValue = undefined;
 let legacyWarned = false;
 
-// Arrival telemetry for the module->editor leg: if the knob feels
-// laggy while the panel-side evals are fast, the delay is upstream of
-// this process. Aggregates land in the same stats log as the panel's.
-let jogArrivals = 0;
-let jogGapSum = 0;
-let jogGapMax = 0;
-let lastArrivalAt = 0;
-
-setInterval(() => {
-  if (jogArrivals === 0) return;
-  try {
-    fs.appendFileSync(
-      "C:\\Users\\sabot\\AppData\\Local\\Temp\\pp-stats.log",
-      new Date().toISOString() +
-        " " +
-        JSON.stringify({
-          type: "editor-stats",
-          jogN: jogArrivals,
-          gapAvg: Math.round(jogGapSum / Math.max(1, jogArrivals - 1)),
-          gapMax: jogGapMax,
-        }) +
-        "\n",
-    );
-  } catch (e) {}
-  jogArrivals = 0;
-  jogGapSum = 0;
-  jogGapMax = 0;
-}, 3000).unref?.();
-
-// Playhead readout state. lastTc is the last timecode the panel
+// Playhead readout state. lastTc is the last timecode the plugin
 // reported; pendingTc waits on the throttle timer; sentAny tracks
 // whether pptc was ever set (so the nil on disconnect/disable only
 // fires when there is something to clear).
@@ -112,7 +84,7 @@ function formatTimecode(ticksStr, tpf) {
 
 // Push the timecode string into the pptc module global. Broadcast to
 // the whole chain; a bare assignment is harmless on modules without a
-// screen and cheap enough not to disturb the module during jogs.
+// screen.
 function sendTimecode(tc) {
   lastSendAt = Date.now();
   sentAny = true;
@@ -138,20 +110,33 @@ function clearTimecode() {
 }
 
 // --- Selected-clip readout -------------------------------------------
-// The panel reports the clicked clip's name + track; both go to the
+// The plugin reports the clicked clip's name + track; both go to the
 // modules as the ppcn / ppct Lua globals for the display block.
 
 let lastClipScript = undefined;
 
 // Module-font-safe name: map Hungarian accents to base letters, drop
-// anything non-printable or Lua-quote-hostile, and truncate to the 22
+// anything non-printable or Lua-quote-hostile, and truncate to the 21
 // characters that fit the screen at glyph size 16.
 const ACCENT_MAP = {
-  "á": "a", "é": "e", "í": "i", "ó": "o",
-  "ö": "o", "ő": "o", "ú": "u", "ü": "u",
-  "ű": "u", "Á": "A", "É": "E", "Í": "I",
-  "Ó": "O", "Ö": "O", "Ő": "O", "Ú": "U",
-  "Ü": "U", "Ű": "U",
+  á: "a",
+  é: "e",
+  í: "i",
+  ó: "o",
+  ö: "o",
+  ő: "o",
+  ú: "u",
+  ü: "u",
+  ű: "u",
+  Á: "A",
+  É: "E",
+  Í: "I",
+  Ó: "O",
+  Ö: "O",
+  Ő: "O",
+  Ú: "U",
+  Ü: "U",
+  Ű: "U",
 };
 
 function moduleSafeName(name) {
@@ -187,7 +172,7 @@ function sendClip(msg) {
 // Trailing-edge throttle: bursts collapse to at most one immediate-Lua
 // packet per SEND_MIN_MS, and the final position always lands. While
 // jog events are streaming, updates are held entirely: each pptc
-// change makes the Timecode Display block repaint a full frame on the
+// change makes the Premiere Display block repaint a full frame on the
 // very module whose encoder produces the jog events, which reads as
 // knob lag. The screen catches up the moment the twist pauses.
 function queueTimecode(tc) {
@@ -200,29 +185,32 @@ function queueTimecode(tc) {
 
 function scheduleSend(delayMs) {
   if (sendTimer) return;
-  sendTimer = setTimeout(() => {
-    sendTimer = undefined;
-    if (pendingTc === undefined || !screenEnabled) return;
-    const sinceJog = Date.now() - lastJogAt;
-    if (sinceJog < JOG_QUIET_MS) {
-      scheduleSend(JOG_QUIET_MS - sinceJog);
-      return;
-    }
-    sendTimecode(pendingTc);
-    pendingTc = undefined;
-  }, Math.max(0, delayMs));
+  sendTimer = setTimeout(
+    () => {
+      sendTimer = undefined;
+      if (pendingTc === undefined || !screenEnabled) return;
+      const sinceJog = Date.now() - lastJogAt;
+      if (sinceJog < JOG_QUIET_MS) {
+        scheduleSend(JOG_QUIET_MS - sinceJog);
+        return;
+      }
+      sendTimecode(pendingTc);
+      pendingTc = undefined;
+    },
+    Math.max(0, delayMs),
+  );
 }
 
-// Send one newline-delimited JSON command to the CEP panel. Silently
-// no-ops when nothing is connected, so pressing a button with
-// Premiere closed does nothing rather than erroring.
+// Send one JSON command to the UXP plugin. Silently no-ops when
+// nothing is connected, so pressing a button with Premiere closed
+// does nothing rather than erroring.
 function sendToPanel(command) {
-  if (!panelSocket || panelSocket.destroyed) return;
+  if (!panelWs || panelWs.readyState !== WebSocket.OPEN) return;
   try {
-    panelSocket.write(JSON.stringify(command) + "\n");
+    panelWs.send(JSON.stringify(command));
   } catch (e) {
-    // A broken pipe just means the panel went away; the server's
-    // close handler will reset the connection state.
+    // A failed send just means the plugin went away; the close
+    // handler will reset the connection state.
   }
 }
 
@@ -230,27 +218,29 @@ function startServer() {
   if (packageShutDown) return;
   stopServer();
 
-  server = net.createServer((socket) => {
-    // Only one panel at a time: a new connection replaces the old.
-    if (panelSocket && !panelSocket.destroyed) {
-      panelSocket.destroy();
+  wss = new WebSocket.Server({ port: BRIDGE_PORT, host: "127.0.0.1" });
+
+  wss.on("connection", (ws) => {
+    // Only one plugin at a time: a new connection replaces the old.
+    if (panelWs && panelWs.readyState === WebSocket.OPEN) {
+      panelWs.close();
     }
-    panelSocket = socket;
+    panelWs = ws;
     isPanelConnected = true;
-    // Tell the panel whether to run the readout at all: disabled means
-    // zero polls and zero reports - the exact pre-readout behavior.
+    // Tell the plugin whether to run the readout at all: disabled
+    // means zero polls and zero reports.
     sendToPanel({ cmd: "readout", enabled: screenEnabled });
     notifyStatusChange();
 
-    socket.setEncoding("utf-8");
-    socket.on("data", handlePanelData);
-    socket.on("error", () => {});
-    socket.on("close", () => {
-      if (panelSocket === socket) {
-        panelSocket = undefined;
+    ws.on("message", handlePanelMessage);
+    ws.on("error", () => {});
+    ws.on("close", () => {
+      if (panelWs === ws) {
+        panelWs = undefined;
         isPanelConnected = false;
-        // Premiere went away: nil out the stale timecode (the display
-        // block shows dashes) and forget it so a reconnect resends.
+        // Premiere went away: nil out the stale readout values (the
+        // display block shows dashes) and forget them so a reconnect
+        // resends.
         lastTc = undefined;
         clearTimecode();
         notifyStatusChange();
@@ -258,68 +248,53 @@ function startServer() {
     });
   });
 
-  server.on("error", (e) => {
+  wss.on("error", (e) => {
     // Most likely EADDRINUSE from a stale instance; retry shortly.
     if (!packageShutDown) {
       setTimeout(startServer, 2000);
     }
   });
-
-  server.listen(BRIDGE_PORT, "127.0.0.1");
 }
 
 function stopServer() {
-  if (panelSocket) {
-    panelSocket.destroy();
-    panelSocket = undefined;
+  if (panelWs) {
+    try {
+      panelWs.close();
+    } catch (e) {}
+    panelWs = undefined;
   }
-  if (server) {
-    server.close();
-    server = undefined;
+  if (wss) {
+    try {
+      wss.close();
+    } catch (e) {}
+    wss = undefined;
   }
   isPanelConnected = false;
 }
 
-// The panel can report back (e.g. current timeline position or an
-// error). Kept minimal for now; surfaced to the editor log on failure.
-let panelBuffer = "";
-function handlePanelData(chunk) {
-  panelBuffer += chunk;
-  let index;
-  while ((index = panelBuffer.indexOf("\n")) >= 0) {
-    const line = panelBuffer.slice(0, index).trim();
-    panelBuffer = panelBuffer.slice(index + 1);
-    if (line === "") continue;
-    try {
-      const msg = JSON.parse(line);
-      if (msg.type === "error" && msg.message) {
-        controller?.sendMessageToEditor({
-          type: "show-message",
-          message: `Premiere: ${msg.message}`,
-          messageType: "fail",
-        });
-      } else if (msg.type === "stats") {
-        // Timing telemetry from the panel (eval durations, queue
-        // waits). Appended to a local file for diagnosing knob feel.
-        try {
-          fs.appendFileSync(
-            "C:\\Users\\sabot\\AppData\\Local\\Temp\\pp-stats.log",
-            new Date().toISOString() + " " + JSON.stringify(msg) + "\n",
-          );
-        } catch (e) {}
-      } else if (msg.type === "playhead") {
-        if (msg.none) {
-          queueTimecode("--:--:--:--");
-        } else {
-          const tc = formatTimecode(msg.ticks, msg.tpf);
-          if (tc) queueTimecode(tc);
-        }
-      } else if (msg.type === "clip") {
-        if (screenEnabled) sendClip(msg);
-      }
-    } catch (e) {
-      // Ignore malformed lines from the panel.
+// The plugin reports back: playhead position, selected clip, errors.
+function handlePanelMessage(data) {
+  let msg;
+  try {
+    msg = JSON.parse(data.toString());
+  } catch (e) {
+    return; // Ignore malformed messages from the plugin.
+  }
+  if (msg.type === "error" && msg.message) {
+    controller?.sendMessageToEditor({
+      type: "show-message",
+      message: `Premiere: ${msg.message}`,
+      messageType: "fail",
+    });
+  } else if (msg.type === "playhead") {
+    if (msg.none) {
+      queueTimecode("--:--:--:--");
+    } else {
+      const tc = formatTimecode(msg.ticks, msg.tpf);
+      if (tc) queueTimecode(tc);
     }
+  } else if (msg.type === "clip") {
+    if (screenEnabled) sendClip(msg);
   }
 }
 
@@ -355,8 +330,8 @@ exports.loadPackage = async function (gridController, persistedData) {
 
   // Timeline Navigate — the hero. Signed detent delta from the
   // element's own 64-centered step state (endless epst, encoder est),
-  // chosen at runtime so one script serves both. Same pattern the
-  // editor's Scroll block hardware-proved. Off-element it yields 0.
+  // chosen at runtime so one script serves both. Off-element it
+  // yields 0.
   createAction({
     short: "xpptl",
     displayName: "Timeline Navigate",
@@ -422,6 +397,7 @@ exports.unloadPackage = async function () {
   }
   clearTimecode();
   stopServer();
+  preferenceMessagePort?.close();
 };
 
 // The preference panel connects here for live connection status.
@@ -431,6 +407,9 @@ exports.addMessagePort = async function (port, senderId) {
     port.on("message", (e) => {
       if (e.data?.type === "request-status") {
         notifyStatusChange();
+      } else if (e.data?.type === "open-plugin-folder") {
+        // The built .ccx installer sits in the package root.
+        openExplorer(__dirname);
       } else if (e.data?.type === "set-screen-readout") {
         screenEnabled = !!e.data.enabled;
         controller?.sendMessageToEditor({
@@ -454,11 +433,10 @@ exports.addMessagePort = async function (port, senderId) {
 };
 
 // gps("package-premiere-pro", <group>, ...args) lands here. Each group
-// maps to one command shape the CEP panel understands.
+// maps to one command shape the UXP plugin understands.
 exports.sendMessage = async function (args) {
   if (!Array.isArray(args)) return;
   const group = args[0];
-
 
   if (group === "timeline") {
     // Current scripts send one signed delta: ["timeline", delta].
@@ -469,8 +447,7 @@ exports.sendMessage = async function (args) {
     if (args.length >= 3) {
       const value = Number(args[1]);
       if (!isFinite(value)) return;
-      delta =
-        typeof lastLegacyValue === "number" ? value - lastLegacyValue : 0;
+      delta = typeof lastLegacyValue === "number" ? value - lastLegacyValue : 0;
       lastLegacyValue = value;
       if (!legacyWarned) {
         legacyWarned = true;
@@ -486,13 +463,6 @@ exports.sendMessage = async function (args) {
     }
     if (!isFinite(delta) || delta === 0) return;
     lastJogAt = Date.now();
-    if (jogArrivals > 0 && lastArrivalAt) {
-      const gap = lastJogAt - lastArrivalAt;
-      jogGapSum += gap;
-      if (gap > jogGapMax) jogGapMax = gap;
-    }
-    jogArrivals++;
-    lastArrivalAt = lastJogAt;
     if (delta > 240) delta = 240;
     if (delta < -240) delta = -240;
     sendToPanel({ cmd: "timeline", delta });

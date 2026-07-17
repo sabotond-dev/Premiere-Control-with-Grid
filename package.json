@@ -1,18 +1,30 @@
 {
   "name": "package-premiere-pro",
-  "version": "1.0.0",
-  "description": "Premiere Pro Package",
+  "version": "2.0.0",
+  "description": "Premiere Pro package",
   "main": "index.js",
   "scripts": {
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "build:ccx": "node build-ccx.js",
+    "build": "run-p build:*",
+    "dev": "echo \"Components are plain prebuilt custom elements - edit components/dist/components.js directly, then restart the Editor frontend.\""
   },
   "author": "sabotond-dev",
   "license": "ISC",
   "grid_editor": {
     "componentsPath": "components/dist/components.js",
     "preferenceComponent": "premiere-preference",
-    "shortDescription": "Control Premiere Pro from Grid modules: jog the timeline with an endless knob, drop markers, set in/out points.",
+    "shortDescription": "Control Premiere Pro from Grid modules: jog the timeline with an endless knob, drop markers, set in/out points, see the playhead and selected clip on a VSN1 screen.",
     "mainIcon": "premiere-logo.svg",
     "menuIcon": "premiere-menu-icon.svg"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "open-file-explorer": "^1.0.2"
+  },
+  "devDependencies": {
+    "archiver": "^7.0.1",
+    "npm-run-all": "^4.1.5",
+    "prettier": "^3.5.3"
   }
 }

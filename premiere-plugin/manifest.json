@@ -1,0 +1,55 @@
+{
+  "id": "c8e52a9b",
+  "name": "Grid Control",
+  "version": "2.0.0",
+  "main": "index.html",
+  "manifestVersion": 5,
+  "host": {
+    "app": "premierepro",
+    "minVersion": "25.6.0"
+  },
+  "requiredPermissions": {
+    "network": {
+      "domains": ["ws://localhost:3543", "ws://127.0.0.1:3543"]
+    }
+  },
+  "entrypoints": [
+    {
+      "id": "gridcontrolpanel",
+      "type": "panel",
+      "minimumSize": { "width": 220, "height": 120 },
+      "maximumSize": { "width": 2000, "height": 2000 },
+      "preferredDockedSize": { "width": 260, "height": 200 },
+      "preferredFloatingSize": { "width": 300, "height": 240 },
+      "label": {
+        "default": "Grid Control"
+      },
+      "icons": [
+        {
+          "width": 23,
+          "height": 23,
+          "path": "icons/dark.svg",
+          "scale": [1, 2],
+          "theme": ["darkest", "dark", "medium"]
+        },
+        {
+          "width": 23,
+          "height": 23,
+          "path": "icons/light.svg",
+          "scale": [1, 2],
+          "theme": ["lightest", "light"]
+        }
+      ]
+    }
+  ],
+  "icons": [
+    {
+      "width": 48,
+      "height": 48,
+      "path": "icons/plugin.svg",
+      "scale": [1, 2],
+      "theme": ["darkest", "dark", "medium", "lightest", "light", "all"],
+      "species": ["pluginList"]
+    }
+  ]
+}
