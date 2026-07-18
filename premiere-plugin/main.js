@@ -9,7 +9,7 @@
 
 const ppro = require("premierepro");
 
-const PLUGIN_VERSION = "1.2.4";
+const PLUGIN_VERSION = "1.2.5";
 const BRIDGE_URL = "ws://localhost:3543";
 const RECONNECT_MS = 2000;
 
@@ -379,37 +379,22 @@ async function runTrim(seq, project, action) {
   const under = await clipsUnderPlayhead(seq);
   if (under.length === 0) return;
   const pos = await seq.getPlayerPosition();
-  const p = pos.ticksNumber;
 
-  // Prefetch the async reads; the actions themselves are created
-  // synchronously inside the locked transaction.
-  const plans = [];
-  for (const item of under) {
-    if (action === "trimafter") {
-      plans.push({ item });
-    } else {
-      const start = (await item.getStartTime()).ticksNumber;
-      const inPoint = (await item.getInPoint()).ticksNumber;
-      plans.push({
-        item,
-        shifted: ppro.TickTime.createWithTicks(
-          String(Math.round(inPoint + (p - start))),
-        ),
-      });
-    }
-  }
-  if (plans.length === 0) return;
+  // Both directions are plain edge trims: createSetStartAction /
+  // createSetEndAction anchor the content in sequence time and manage
+  // the source in/out themselves (hardware-verified - an extra manual
+  // in-point compensation double-shifted the content past the
+  // playhead).
   runTransaction(
     project,
     action === "trimafter" ? "Trim after playhead" : "Trim before playhead",
     (compound) => {
-      for (const plan of plans) {
-        if (action === "trimafter") {
-          compound.addAction(plan.item.createSetEndAction(pos));
-        } else {
-          compound.addAction(plan.item.createSetInPointAction(plan.shifted));
-          compound.addAction(plan.item.createSetStartAction(pos));
-        }
+      for (const item of under) {
+        compound.addAction(
+          action === "trimafter"
+            ? item.createSetEndAction(pos)
+            : item.createSetStartAction(pos),
+        );
       }
     },
   );

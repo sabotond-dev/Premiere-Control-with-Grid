@@ -1,7 +1,7 @@
 {
   "id": "c8e52a9b",
   "name": "Grid Control",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "main": "index.html",
   "manifestVersion": 5,
   "host": {
