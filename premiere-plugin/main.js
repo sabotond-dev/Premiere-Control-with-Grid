@@ -9,7 +9,7 @@
 
 const ppro = require("premierepro");
 
-const PLUGIN_VERSION = "1.3.1";
+const PLUGIN_VERSION = "1.4.0-spike";
 const BRIDGE_URL = "ws://localhost:3543";
 const RECONNECT_MS = 2000;
 
@@ -159,6 +159,16 @@ function dispatch(command) {
 
   if (command.cmd === "project") {
     runProjectOp(String(command.action || "save"));
+    return;
+  }
+
+  if (command.cmd === "pmap") {
+    // Parameter-mapping SPIKE (feature/param-mapping branch).
+    if (command.action === "probe") {
+      runParamProbe();
+      return;
+    }
+    queueParamValue(Number(command.slot), Number(command.value));
     return;
   }
 }
@@ -490,6 +500,179 @@ async function runProjectOp(action) {
     }
   } catch (e) {
     sendError(e, "project " + action);
+  }
+}
+
+// --- Parameter mapping SPIKE (feature/param-mapping branch) ----------
+// Two research questions this answers on real hardware:
+//  1. Can we enumerate a clip's effects + parameters (incl. Lumetri)?
+//     -> "probe" dumps the full component/param tree to the editor,
+//        which writes it to a JSON file.
+//  2. What does a fader-driven createSetValueAction feel like at
+//     ~10 transactions/second (undo history, playback smoothness)?
+//     -> slot 1 is hardcoded to Lumetri "Exposure" on the selected
+//        clip (or the first clip of V1), mapped 0..127 -> -5..+5.
+
+let pmapCache = { clipKey: null, param: null, paramName: "", project: null };
+let pmapPendingValue = undefined;
+let pmapTimer = undefined;
+let pmapLastErrorAt = 0;
+
+async function selectedOrFirstClip(seq) {
+  const selection = await seq.getSelection();
+  const items = selection ? await selection.getTrackItems() : [];
+  if (items && items.length > 0) return items[0];
+  const clipType =
+    (ppro.Constants &&
+      ppro.Constants.TrackItemType &&
+      ppro.Constants.TrackItemType.CLIP) ??
+    1;
+  const vt = await seq.getVideoTrack(0);
+  const clips = vt ? await vt.getTrackItems(clipType, false) : [];
+  return clips && clips.length > 0 ? clips[0] : null;
+}
+
+// Collect component + param REFS synchronously under the lock; read
+// the async display names afterwards.
+function collectComponentRefs(project, chain) {
+  const refs = [];
+  project.lockedAccess(() => {
+    const count = chain.getComponentCount();
+    for (let c = 0; c < count; c++) {
+      const comp = chain.getComponentAtIndex(c);
+      const params = [];
+      const pCount = comp.getParamCount();
+      for (let p = 0; p < pCount; p++) params.push(comp.getParam(p));
+      refs.push({ comp, params });
+    }
+  });
+  return refs;
+}
+
+async function runParamProbe() {
+  try {
+    const { project, seq } = await activeSequence();
+    if (!seq) return sendError("No active sequence", "pmap probe");
+    const item = await selectedOrFirstClip(seq);
+    if (!item) return sendError("No clip found", "pmap probe");
+    const chain = await item.getComponentChain();
+    const refs = collectComponentRefs(project, chain);
+
+    const report = { clip: String(await item.getName()), components: [] };
+    for (const ref of refs) {
+      const entry = {
+        matchName: String(await ref.comp.getMatchName()),
+        displayName: String(await ref.comp.getDisplayName()),
+        params: [],
+      };
+      for (let i = 0; i < ref.params.length; i++) {
+        const param = ref.params[i];
+        let value = null;
+        let timeVarying = null;
+        try {
+          timeVarying = await param.isTimeVarying();
+        } catch (e) {}
+        try {
+          const kf = await param.getStartValue();
+          value = kf?.value?.value ?? kf?.value ?? null;
+        } catch (e) {
+          value = "unreadable";
+        }
+        entry.params.push({
+          index: i,
+          name: String(param.displayName ?? ""),
+          value,
+          timeVarying,
+        });
+      }
+      report.components.push(entry);
+    }
+    logLine(
+      `probe: ${report.components.length} components on "${report.clip}"`,
+    );
+    send({ type: "probe", data: report });
+  } catch (e) {
+    sendError(e, "pmap probe");
+  }
+}
+
+async function resolvePmapTarget() {
+  const { project, seq } = await activeSequence();
+  if (!seq) return null;
+  const item = await selectedOrFirstClip(seq);
+  if (!item) return null;
+  const clipKey =
+    String(await item.getName()) + "|" + (await item.getTrackIndex());
+  if (pmapCache.clipKey === clipKey && pmapCache.param) return pmapCache;
+
+  const chain = await item.getComponentChain();
+  const refs = collectComponentRefs(project, chain);
+  for (const ref of refs) {
+    const matchName = String(await ref.comp.getMatchName());
+    if (!/lumetri/i.test(matchName)) continue;
+    for (const param of ref.params) {
+      if (/exposure/i.test(String(param.displayName ?? ""))) {
+        pmapCache = {
+          clipKey,
+          param,
+          paramName: String(param.displayName),
+          project,
+        };
+        logLine(`pmap bound: ${pmapCache.paramName} on ${clipKey}`);
+        return pmapCache;
+      }
+    }
+  }
+  pmapCache = { clipKey, param: null, paramName: "", project };
+  return pmapCache;
+}
+
+function queueParamValue(slot, value) {
+  if (slot !== 1 || !isFinite(value)) return; // spike: one hardcoded slot
+  pmapPendingValue = value;
+  if (pmapTimer) return;
+  pmapTimer = setTimeout(applyParamValue, 100);
+}
+
+async function applyParamValue() {
+  pmapTimer = undefined;
+  const v = pmapPendingValue;
+  pmapPendingValue = undefined;
+  if (typeof v === "undefined") return;
+  try {
+    const target = await resolvePmapTarget();
+    if (!target || !target.param) {
+      const now = Date.now();
+      if (now - pmapLastErrorAt > 3000) {
+        pmapLastErrorAt = now;
+        sendError(
+          "No Lumetri Exposure found - add Lumetri Color to the clip first",
+          "pmap",
+        );
+      }
+      return;
+    }
+    // 0..127 -> Lumetri exposure -5..+5, two decimals.
+    const mapped = Math.round(((v / 127) * 10 - 5) * 100) / 100;
+    const { param, project } = target;
+    let success = false;
+    project.lockedAccess(() => {
+      success = project.executeTransaction((compound) => {
+        const kf = param.createKeyframe(mapped);
+        compound.addAction(param.createSetValueAction(kf, true));
+      }, "Grid: Exposure");
+    });
+    if (success) logLine(`exposure -> ${mapped}`);
+  } catch (e) {
+    const now = Date.now();
+    if (now - pmapLastErrorAt > 3000) {
+      pmapLastErrorAt = now;
+      sendError(e, "pmap");
+    }
+  }
+  // A newer value may have arrived while this one applied.
+  if (typeof pmapPendingValue !== "undefined" && !pmapTimer) {
+    pmapTimer = setTimeout(applyParamValue, 100);
   }
 }
 

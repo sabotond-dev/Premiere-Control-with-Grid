@@ -500,6 +500,44 @@
     }
   }
 
+  // --- Param Map (spike) -----------------------------------------------
+  // Research build: streams this element's value to a mapping slot.
+  // Slot 1 is hardwired to Lumetri Exposure on the plugin side.
+  class PmapAction extends PremiereActionElement {
+    render() {
+      this.slot = 1;
+      const root = document.createElement("div");
+      root.className = "pp-root";
+      root.innerHTML = `
+        <label class="pp-field">
+          <span>Slot</span>
+          <input class="pp-input pp-slot" type="number" min="1" max="8" value="1" />
+        </label>
+        <div class="pp-note">
+          SPIKE build. Put this on a fader or knob - its value streams
+          to the slot. Slot 1 currently drives <b>Lumetri Exposure</b>
+          on the selected clip (add the Lumetri Color effect first).
+          Other slots do nothing yet.
+        </div>`;
+      this.appendChild(root);
+      this.slotInput = root.querySelector(".pp-slot");
+      this.slotInput.addEventListener("input", () => {
+        this.slot = Math.max(1, Math.min(8, Number(this.slotInput.value) || 1));
+        this.commit();
+      });
+    }
+
+    fromScript(script) {
+      const m = script.match(/"pmap",\s*(\d+)/);
+      this.slot = m ? Number(m[1]) : 1;
+      if (this.slotInput) this.slotInput.value = String(this.slot);
+    }
+
+    toScript() {
+      return `gps("${PKG}", "pmap", ${this.slot}, self:get_auto_value())`;
+    }
+  }
+
   // --- Timecode Display ------------------------------------------------
   // No parameters; the block carries its own draw-event Lua. The UI is
   // a placement note, since this one only makes sense on the screen
@@ -588,6 +626,9 @@
         </div>
         <button class="pp-input pp-open-folder" style="cursor:pointer;flex:none;">
           Open plugin folder (.ccx installer)
+        </button>
+        <button class="pp-input pp-probe" style="cursor:pointer;flex:none;">
+          Probe clip parameters (spike)
         </button>`;
       this.appendChild(root);
       this.dot = root.querySelector(".pp-dot");
@@ -601,6 +642,9 @@
       });
       root.querySelector(".pp-open-folder").addEventListener("click", () => {
         this.port?.postMessage({ type: "open-plugin-folder" });
+      });
+      root.querySelector(".pp-probe").addEventListener("click", () => {
+        this.port?.postMessage({ type: "pmap-probe" });
       });
 
       try {
@@ -633,6 +677,7 @@
     ["premiere-marker-action", MarkerAction],
     ["premiere-inout-action", InOutAction],
     ["premiere-timecode-action", TimecodeAction],
+    ["premiere-pmap-action", PmapAction],
     ["premiere-tool-action", ToolAction],
     ["premiere-phead-action", PlayheadAction],
     ["premiere-clip-action", ClipAction],

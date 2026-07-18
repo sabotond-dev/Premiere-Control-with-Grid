@@ -438,6 +438,18 @@ function handlePanelMessage(data) {
     }
   } else if (msg.type === "clip") {
     if (screenEnabled) sendClip(msg);
+  } else if (msg.type === "probe") {
+    // Parameter-mapping spike: dump the component/param tree where
+    // the developer can read it.
+    try {
+      const out = path.join(require("os").tmpdir(), "pp-param-probe.json");
+      fs.writeFileSync(out, JSON.stringify(msg.data, null, 2));
+      controller?.sendMessageToEditor({
+        type: "show-message",
+        message: `Parameter probe written to ${out}`,
+        messageType: "success",
+      });
+    } catch (e) {}
   }
 }
 
@@ -604,6 +616,16 @@ exports.loadPackage = async function (gridController, persistedData) {
     actionComponent: "premiere-zoom-action",
   });
 
+  // Parameter Map SPIKE (feature/param-mapping branch): a fader/knob
+  // streams its value to a slot; slot 1 is hardwired to Lumetri
+  // Exposure on the selected clip while we research the real feature.
+  createAction({
+    short: "xpppm",
+    displayName: "Param Map (spike)",
+    defaultLua: 'gps("package-premiere-pro", "pmap", 1, self:get_auto_value())',
+    actionComponent: "premiere-pmap-action",
+  });
+
   startServer();
   notifyStatusChange();
 };
@@ -632,6 +654,8 @@ exports.addMessagePort = async function (port, senderId) {
       } else if (e.data?.type === "open-plugin-folder") {
         // The built .ccx installer sits in the package root.
         openExplorer(__dirname);
+      } else if (e.data?.type === "pmap-probe") {
+        sendToPanel({ cmd: "pmap", action: "probe" });
       } else if (e.data?.type === "set-screen-readout") {
         screenEnabled = !!e.data.enabled;
         controller?.sendMessageToEditor({
@@ -718,6 +742,15 @@ exports.sendMessage = async function (args) {
   if (group === "project") {
     // args: ["project", "save"]
     sendToPanel({ cmd: "project", action: String(args[1] ?? "save") });
+    return;
+  }
+
+  if (group === "pmap") {
+    // args: ["pmap", slot, value] - parameter mapping spike. Values
+    // stream at fader rate; the plugin coalesces to ~10 writes/s.
+    const value = Number(args[2]);
+    if (!isFinite(value)) return;
+    sendToPanel({ cmd: "pmap", slot: Number(args[1]) || 1, value });
     return;
   }
 
