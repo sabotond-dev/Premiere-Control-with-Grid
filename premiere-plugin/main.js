@@ -652,8 +652,8 @@ async function applyParamValue() {
       }
       return;
     }
-    // 0..127 -> Lumetri exposure -5..+5, two decimals.
-    const mapped = Math.round(((v / 127) * 10 - 5) * 100) / 100;
+    // 0..127 -> Lumetri exposure -7..+7 (UI slider bounds), two decimals.
+    const mapped = Math.round(((v / 127) * 14 - 7) * 100) / 100;
     const { param, project } = target;
     let success = false;
     project.lockedAccess(() => {
