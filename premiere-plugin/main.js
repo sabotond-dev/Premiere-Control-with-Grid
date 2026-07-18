@@ -166,6 +166,23 @@ async function activeSequence() {
   return { project, seq };
 }
 
+// Every mutation must run inside project.lockedAccess, and the actions
+// must be created inside the transaction callback (Adobe's sample
+// pattern - without the lock, actions fail with "script action failed
+// to execute"). `build` receives the compound action and adds to it.
+function runTransaction(project, label, build) {
+  let success = false;
+  project.lockedAccess(() => {
+    success = project.executeTransaction((compound) => {
+      build(compound);
+    }, label);
+  });
+  if (!success) {
+    sendError(`${label} failed`);
+  }
+  return success;
+}
+
 // --- Timeline jog ----------------------------------------------------
 // One operation in flight; deltas accumulate while busy and flush as
 // one jump, so fast twists coalesce instead of queueing.
@@ -209,16 +226,18 @@ async function runMarker(action) {
 
     if (action === "add") {
       const markers = await ppro.Markers.getMarkers(seq);
-      const addAction = markers.createAddMarkerAction(
-        "",
-        "Comment",
-        pos,
-        ppro.TickTime.TIME_ZERO,
-        "",
-      );
-      project.executeTransaction((compound) => {
-        compound.addAction(addAction);
-      }, "Add marker");
+      const markerType = ppro.Marker?.MARKER_TYPE_COMMENT ?? "Comment";
+      runTransaction(project, "Add marker", (compound) => {
+        compound.addAction(
+          markers.createAddMarkerAction(
+            "",
+            markerType,
+            pos,
+            ppro.TickTime.TIME_ZERO,
+            "",
+          ),
+        );
+      });
       return;
     }
 
@@ -258,19 +277,19 @@ async function runInOut(action) {
     const pos = await seq.getPlayerPosition();
 
     if (action === "in") {
-      project.executeTransaction((compound) => {
+      runTransaction(project, "Set in point", (compound) => {
         compound.addAction(seq.createSetInPointAction(pos));
-      }, "Set in point");
+      });
     } else if (action === "out") {
-      project.executeTransaction((compound) => {
+      runTransaction(project, "Set out point", (compound) => {
         compound.addAction(seq.createSetOutPointAction(pos));
-      }, "Set out point");
+      });
     } else if (action === "clear") {
       const end = await seq.getEndTime();
-      project.executeTransaction((compound) => {
+      runTransaction(project, "Clear in/out", (compound) => {
         compound.addAction(seq.createSetInPointAction(ppro.TickTime.TIME_ZERO));
         compound.addAction(seq.createSetOutPointAction(end));
-      }, "Clear in/out");
+      });
     }
   } catch (e) {
     sendError(e);
@@ -317,26 +336,37 @@ async function runTrim(seq, project, action) {
   const pos = await seq.getPlayerPosition();
   const p = pos.ticksNumber;
 
-  const actions = [];
+  // Prefetch the async reads; the actions themselves are created
+  // synchronously inside the locked transaction.
+  const plans = [];
   for (const item of under) {
     if (action === "trimafter") {
-      actions.push(item.createSetEndAction(pos));
+      plans.push({ item });
     } else {
       const start = (await item.getStartTime()).ticksNumber;
       const inPoint = (await item.getInPoint()).ticksNumber;
-      const shifted = ppro.TickTime.createWithTicks(
-        String(Math.round(inPoint + (p - start))),
-      );
-      actions.push(item.createSetInPointAction(shifted));
-      actions.push(item.createSetStartAction(pos));
+      plans.push({
+        item,
+        shifted: ppro.TickTime.createWithTicks(
+          String(Math.round(inPoint + (p - start))),
+        ),
+      });
     }
   }
-  if (actions.length === 0) return;
-  project.executeTransaction(
-    (compound) => {
-      for (const a of actions) compound.addAction(a);
-    },
+  if (plans.length === 0) return;
+  runTransaction(
+    project,
     action === "trimafter" ? "Trim after playhead" : "Trim before playhead",
+    (compound) => {
+      for (const plan of plans) {
+        if (action === "trimafter") {
+          compound.addAction(plan.item.createSetEndAction(pos));
+        } else {
+          compound.addAction(plan.item.createSetInPointAction(plan.shifted));
+          compound.addAction(plan.item.createSetStartAction(pos));
+        }
+      }
+    },
   );
 }
 
@@ -374,14 +404,16 @@ async function runClipOp(action) {
     if (!items || items.length === 0) return sendError("No clip selected");
 
     if (action === "toggle") {
-      const actions = [];
+      const plans = [];
       for (const item of items) {
         const disabled = await item.isDisabled();
-        actions.push(item.createSetDisabledAction(!disabled));
+        plans.push({ item, next: !disabled });
       }
-      project.executeTransaction((compound) => {
-        for (const a of actions) compound.addAction(a);
-      }, "Toggle clip enable");
+      runTransaction(project, "Toggle clip enable", (compound) => {
+        for (const plan of plans) {
+          compound.addAction(plan.item.createSetDisabledAction(plan.next));
+        }
+      });
       return;
     }
 
@@ -392,15 +424,11 @@ async function runClipOp(action) {
           ppro.Constants.MediaType &&
           (ppro.Constants.MediaType.ANY ?? ppro.Constants.MediaType.ALL)) ??
         undefined;
-      const removeAction = editor.createRemoveItemsAction(
-        selection,
-        false,
-        mediaType,
-        false,
-      );
-      project.executeTransaction((compound) => {
-        compound.addAction(removeAction);
-      }, "Delete clips");
+      runTransaction(project, "Delete clips", (compound) => {
+        compound.addAction(
+          editor.createRemoveItemsAction(selection, false, mediaType, false),
+        );
+      });
     }
   } catch (e) {
     sendError(e);
