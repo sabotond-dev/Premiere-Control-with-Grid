@@ -11,6 +11,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { spawn } = require("child_process");
 const WebSocket = require("ws");
 const openExplorer = require("open-file-explorer");
 
@@ -199,6 +200,105 @@ function scheduleSend(delayMs) {
     },
     Math.max(0, delayMs),
   );
+}
+
+// --- Timeline zoom ---------------------------------------------------
+// Premiere's UXP API has no timeline-view zoom, and keyboard shortcuts
+// are keyboard-layout-dependent (HID positions, not characters). The
+// real gesture is Ctrl+scroll over the timeline, so we synthesize
+// exactly that at the OS level: a persistent PowerShell helper holds a
+// SendInput binding and turns each knob burst into ONE native
+// ctrl+wheel event with a multiplied delta - no message flood, no
+// layout dependence, works wherever the mouse hovers (like the real
+// gesture; no panel focus needed). Windows-only for now.
+
+const ZOOM_HELPER_PS = `
+$cs = @"
+using System;
+using System.Runtime.InteropServices;
+public class GridZoom {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+  [StructLayout(LayoutKind.Explicit)]
+  public struct InputUnion { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct INPUT { public uint type; public InputUnion U; }
+  [DllImport("user32.dll", SetLastError = true)]
+  public static extern uint SendInput(uint n, INPUT[] inputs, int size);
+  public static void Wheel(int delta) {
+    INPUT[] list = new INPUT[3];
+    list[0].type = 1; list[0].U.ki = new KEYBDINPUT { wVk = 0x11 };
+    list[1].type = 0; list[1].U.mi = new MOUSEINPUT { mouseData = unchecked((uint)delta), dwFlags = 0x0800 };
+    list[2].type = 1; list[2].U.ki = new KEYBDINPUT { wVk = 0x11, dwFlags = 0x0002 };
+    SendInput(3, list, Marshal.SizeOf(typeof(INPUT)));
+  }
+}
+"@
+Add-Type -TypeDefinition $cs
+while ($true) {
+  $line = [Console]::In.ReadLine()
+  if ($null -eq $line) { break }
+  $n = 0
+  if ([int]::TryParse($line, [ref]$n) -and $n -ne 0) { [GridZoom]::Wheel($n * 120) }
+}
+`;
+
+let zoomProc = undefined;
+let zoomAccum = 0;
+let zoomTimer = undefined;
+
+function ensureZoomHelper() {
+  if (zoomProc || packageShutDown) return;
+  if (process.platform !== "win32" || process.env.GRID_PP_DISABLE_ZOOM) return;
+  try {
+    const encoded = Buffer.from(ZOOM_HELPER_PS, "utf16le").toString("base64");
+    zoomProc = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-NoLogo", "-NonInteractive", "-EncodedCommand", encoded],
+      { stdio: ["pipe", "ignore", "ignore"], windowsHide: true },
+    );
+    zoomProc.on("exit", () => {
+      zoomProc = undefined;
+    });
+    zoomProc.on("error", () => {
+      zoomProc = undefined;
+    });
+  } catch (e) {
+    zoomProc = undefined;
+  }
+}
+
+function stopZoomHelper() {
+  if (zoomTimer) {
+    clearTimeout(zoomTimer);
+    zoomTimer = undefined;
+  }
+  zoomAccum = 0;
+  if (zoomProc) {
+    try {
+      zoomProc.stdin.end();
+      zoomProc.kill();
+    } catch (e) {}
+    zoomProc = undefined;
+  }
+}
+
+// Detent bursts coalesce for 25ms and leave as a single wheel event.
+function queueZoom(delta) {
+  ensureZoomHelper();
+  zoomAccum += delta;
+  if (zoomTimer) return;
+  zoomTimer = setTimeout(() => {
+    zoomTimer = undefined;
+    const n = zoomAccum;
+    zoomAccum = 0;
+    if (n === 0 || !zoomProc) return;
+    try {
+      zoomProc.stdin.write(String(n) + "\n");
+    } catch (e) {}
+  }, 25);
 }
 
 // Send one JSON command to the UXP plugin. Silently no-ops when
@@ -457,9 +557,7 @@ exports.loadPackage = async function (gridController, persistedData) {
     short: "xppzm",
     displayName: "Timeline Zoom",
     defaultLua:
-      "local d=(((self.epst and self:epst()) or (self.est and self:est()) or 64)-64)*1 " +
-      "if d~=0 then local k=46 if d<0 then k=45 d=-d end " +
-      "if d>10 then d=10 end for i=1,d do gks(25,0,2,k) end end",
+      'gps("package-premiere-pro", "zoom", (((self.epst and self:epst()) or (self.est and self:est()) or 64)-64)*1)',
     actionComponent: "premiere-zoom-action",
   });
 
@@ -477,6 +575,7 @@ exports.unloadPackage = async function () {
   }
   clearTimecode();
   stopServer();
+  stopZoomHelper();
   preferenceMessagePort?.close();
 };
 
@@ -576,6 +675,16 @@ exports.sendMessage = async function (args) {
   if (group === "project") {
     // args: ["project", "save"]
     sendToPanel({ cmd: "project", action: String(args[1] ?? "save") });
+    return;
+  }
+
+  if (group === "zoom") {
+    // args: ["zoom", delta] - OS-level ctrl+wheel, not the plugin.
+    let delta = Number(args[1]);
+    if (!isFinite(delta) || delta === 0) return;
+    if (delta > 10) delta = 10;
+    if (delta < -10) delta = -10;
+    queueZoom(delta);
     return;
   }
 };

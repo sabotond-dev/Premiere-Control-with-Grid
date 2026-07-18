@@ -450,15 +450,11 @@
   }
 
   // --- Timeline Zoom ---------------------------------------------------
-  // Endless knob: types Premiere's zoom shortcut (= / -) once per
-  // detent step, clamped so a violent twist cannot flood keystrokes.
+  // Endless knob: signed detent delta to the package, which synthesizes
+  // a native Ctrl+scroll gesture at the OS level (keyboard shortcuts
+  // are layout-dependent and Premiere has no zoom API).
   function zoomScript(steps) {
-    return (
-      "local d=(((self.epst and self:epst()) or (self.est and self:est()) or 64)-64)*" +
-      steps +
-      " if d~=0 then local k=46 if d<0 then k=45 d=-d end " +
-      "if d>10 then d=10 end for i=1,d do gks(25,0,2,k) end end"
-    );
+    return `gps("${PKG}", "zoom", (((self.epst and self:epst()) or (self.est and self:est()) or 64)-64)*${steps})`;
   }
 
   class ZoomAction extends PremiereActionElement {
@@ -472,10 +468,12 @@
           <input class="pp-input pp-steps" type="number" min="1" max="10" value="1" />
         </label>
         <div class="pp-note">
-          Zooms the Premiere timeline (= and - shortcuts) as you turn
-          this endless knob. <b>The Timeline panel must have focus</b> -
-          unlike tool shortcuts, Premiere's zoom keys only act on the
-          focused Timeline, so click it once before zooming.
+          Zooms the Premiere timeline by synthesizing the native
+          Ctrl+scroll gesture as you turn this endless knob.
+          <b>Hover the mouse over the timeline</b> while turning - the
+          zoom lands wherever the cursor is, exactly like scrolling
+          yourself (no panel focus or keyboard layout involved).
+          Windows only for now.
         </div>`;
       this.appendChild(root);
       this.stepsInput = root.querySelector(".pp-steps");
@@ -489,6 +487,7 @@
     }
 
     fromScript(script) {
+      // Matches both the gps form and the legacy keystroke form.
       const m = script.match(/or 64\)-64\)\*(\d+)/);
       this.steps = m ? Number(m[1]) : 1;
       if (this.stepsInput) this.stepsInput.value = String(this.steps);

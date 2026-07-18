@@ -68,18 +68,22 @@ focus:
 | Project save, Export (queue to Media Encoder)          |
 | Premiere Display readout (playhead + selected clip)    |
 
+**Timeline Zoom** takes a third route: Premiere has no zoom API and
+zoom keyboard shortcuts are keyboard-layout-dependent, so the package
+synthesizes the native **Ctrl+scroll gesture at the OS level** (a
+persistent SendInput helper; each knob burst becomes one wheel event
+with a multiplied delta). Hover the mouse over the timeline while
+turning — it lands wherever the cursor is, no panel focus needed.
+Windows only for now.
+
 The rest have **no API at all** and remain USB keystrokes sent by the
 module (Premiere must be the focused app, and remapped shortcuts won't
 match): Undo, Redo, Render, Cut under playhead, Speed/Duration, Audio
 Gain, Group, Ungroup, Copy, Paste, Selection/Razor tool, Snap toggle,
-Effect Controls panel, Modifier Hold, and Timeline Zoom.
+Effect Controls panel, and Modifier Hold.
 
-Two further caveats:
-
-- **Trim** does not ripple (the API has no ripple edit), so it leaves a
-  gap where Premiere's Q/W would close it.
-- **Timeline Zoom** is a Timeline-_panel_ shortcut, so it only acts
-  when that panel has keyboard focus, unlike app-level tool keys.
+One further caveat: **Trim** does not ripple (the API has no ripple
+edit), so it leaves a gap where Premiere's Q/W would close it.
 
 ## Install (user)
 
