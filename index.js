@@ -341,10 +341,15 @@ exports.loadPackage = async function (gridController, persistedData) {
   });
 
   // Markers — add at the playhead, or jump to the next/previous one.
+  // Edge-latched: Grid button events fire on press AND release, so a
+  // bare gps() would trigger twice per press.
   createAction({
     short: "xppmk",
     displayName: "Marker",
-    defaultLua: 'gps("package-premiere-pro", "marker", "add")',
+    defaultLua:
+      "if self:bst()>0 then if self.ppmk~=1 then self.ppmk=1 " +
+      'gps("package-premiere-pro", "marker", "add") end ' +
+      "else self.ppmk=0 end",
     actionComponent: "premiere-marker-action",
   });
 
@@ -352,7 +357,10 @@ exports.loadPackage = async function (gridController, persistedData) {
   createAction({
     short: "xppio",
     displayName: "In / Out Point",
-    defaultLua: 'gps("package-premiere-pro", "inout", "in")',
+    defaultLua:
+      "if self:bst()>0 then if self.ppio~=1 then self.ppio=1 " +
+      'gps("package-premiere-pro", "inout", "in") end ' +
+      "else self.ppio=0 end",
     actionComponent: "premiere-inout-action",
   });
 

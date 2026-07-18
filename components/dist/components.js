@@ -48,31 +48,45 @@
 
   // Base class handling the editor handshake so each action element
   // only implements render(), fromScript() and toScript().
+  //
+  // The updateConfigHandler dispatch is DEFERRED and re-fired on every
+  // connect: the editor's Package.svelte wrapper attaches its listeners
+  // in a reactive statement that runs after the element is already in
+  // the DOM, so a synchronous dispatch from connectedCallback fires
+  // before anyone listens - the wrapper then never learns the handler
+  // and a pasted block never receives its copied script. bubbles:true
+  // for wrappers that listen on an ancestor.
   class PremiereActionElement extends HTMLElement {
     connectedCallback() {
-      if (this._built) return;
-      this._built = true;
-      injectStyle(this);
-      this.render();
-      this.dispatchEvent(
-        new CustomEvent("updateConfigHandler", {
-          detail: {
-            handler: (config) => {
-              this._config = config;
-              try {
-                this.fromScript(String(config?.script ?? ""));
-              } catch (e) {
-                /* leave UI at defaults on a script we don't recognize */
-              }
+      if (!this._built) {
+        this._built = true;
+        injectStyle(this);
+        this.render();
+      }
+      setTimeout(() => {
+        if (!this.isConnected) return;
+        this.dispatchEvent(
+          new CustomEvent("updateConfigHandler", {
+            bubbles: true,
+            detail: {
+              handler: (config) => {
+                this._config = config;
+                try {
+                  this.fromScript(String(config?.script ?? ""));
+                } catch (e) {
+                  /* leave UI at defaults on a script we don't recognize */
+                }
+              },
             },
-          },
-        }),
-      );
+          }),
+        );
+      }, 0);
     }
 
     commit() {
       this.dispatchEvent(
         new CustomEvent("updateCode", {
+          bubbles: true,
           detail: { script: this.toScript() },
         }),
       );
@@ -145,13 +159,19 @@
     }
 
     fromScript(script) {
+      // Tolerant of both the current edge-latched form and the legacy
+      // bare gps() form (which double-fired on press + release).
       const m = script.match(/"marker",\s*"(\w+)"/);
       this.action = m ? m[1] : "add";
       if (this.sel) this.sel.value = this.action;
     }
 
     toScript() {
-      return `gps("${PKG}", "marker", "${this.action}")`;
+      return (
+        `if self:bst()>0 then if self.ppmk~=1 then self.ppmk=1 ` +
+        `gps("${PKG}", "marker", "${this.action}") end ` +
+        `else self.ppmk=0 end`
+      );
     }
   }
 
@@ -180,13 +200,18 @@
     }
 
     fromScript(script) {
+      // Tolerant of both the edge-latched and legacy bare forms.
       const m = script.match(/"inout",\s*"(\w+)"/);
       this.action = m ? m[1] : "in";
       if (this.sel) this.sel.value = this.action;
     }
 
     toScript() {
-      return `gps("${PKG}", "inout", "${this.action}")`;
+      return (
+        `if self:bst()>0 then if self.ppio~=1 then self.ppio=1 ` +
+        `gps("${PKG}", "inout", "${this.action}") end ` +
+        `else self.ppio=0 end`
+      );
     }
   }
 
