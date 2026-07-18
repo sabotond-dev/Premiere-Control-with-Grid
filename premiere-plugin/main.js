@@ -9,6 +9,7 @@
 
 const ppro = require("premierepro");
 
+const PLUGIN_VERSION = "1.2.2";
 const BRIDGE_URL = "ws://localhost:3543";
 const RECONNECT_MS = 2000;
 
@@ -61,9 +62,14 @@ function send(obj) {
   }
 }
 
-function sendError(e) {
-  const message = String(e?.message ?? e).slice(0, 200);
+// Errors carry the step that failed; the panel log additionally keeps
+// the first stack line so a single screenshot diagnoses the site.
+function sendError(e, step) {
+  const base = String(e?.message ?? e).slice(0, 160);
+  const message = step ? `${step}: ${base}` : base;
   logLine("error: " + message);
+  const stackLine = String(e?.stack ?? "").split("\n")[1];
+  if (stackLine) logLine("  at " + stackLine.trim().slice(0, 120));
   send({ type: "error", message });
 }
 
@@ -85,7 +91,7 @@ function connect() {
     // idea where the timeline is until something changes.
     lastPlayheadKey = null;
     lastClipKey = null;
-    setStatus("Connected to Grid Editor", true);
+    setStatus(`Connected to Grid Editor · v${PLUGIN_VERSION}`, true);
     logLine("connected");
   };
 
@@ -170,15 +176,34 @@ async function activeSequence() {
 // must be created inside the transaction callback (Adobe's sample
 // pattern - without the lock, actions fail with "script action failed
 // to execute"). `build` receives the compound action and adds to it.
+// Errors from inside the callbacks are re-thrown with the step tagged,
+// so the panel log names the exact failing site.
 function runTransaction(project, label, build) {
   let success = false;
-  project.lockedAccess(() => {
+  let inner;
+  const wrapped = () => {
     success = project.executeTransaction((compound) => {
-      build(compound);
+      try {
+        build(compound);
+      } catch (e) {
+        inner = e;
+        throw e;
+      }
     }, label);
-  });
+  };
+  try {
+    if (typeof project.lockedAccess === "function") {
+      project.lockedAccess(wrapped);
+    } else {
+      logLine("lockedAccess missing - running transaction bare");
+      wrapped();
+    }
+  } catch (e) {
+    sendError(inner ?? e, `${label} (transaction)`);
+    return false;
+  }
   if (!success) {
-    sendError(`${label} failed`);
+    sendError(`executeTransaction returned false`, label);
   }
   return success;
 }
@@ -209,7 +234,7 @@ async function runJog() {
       }
     }
   } catch (e) {
-    sendError(e);
+    sendError(e, "jog");
   }
 
   opBusy = false;
@@ -227,12 +252,21 @@ async function runMarker(action) {
     if (action === "add") {
       const markers = await ppro.Markers.getMarkers(seq);
       const markerType = ppro.Marker?.MARKER_TYPE_COMMENT ?? "Comment";
+      // Diagnostic crumb: which API surfaces this Premiere build has.
+      logLine(
+        `marker probe: lockedAccess=${typeof project.lockedAccess} ` +
+          `typeConst=${String(ppro.Marker?.MARKER_TYPE_COMMENT)} ` +
+          `markers=${typeof markers?.createAddMarkerAction}`,
+      );
+      // Freeze the playhead into a plain TickTime - a live object from
+      // getPlayerPosition may not survive into the locked transaction.
+      const at = ppro.TickTime.createWithTicks(String(pos.ticks));
       runTransaction(project, "Add marker", (compound) => {
         compound.addAction(
           markers.createAddMarkerAction(
-            "",
+            "Marker",
             markerType,
-            pos,
+            at,
             ppro.TickTime.TIME_ZERO,
             "",
           ),
@@ -264,7 +298,7 @@ async function runMarker(action) {
       ppro.TickTime.createWithTicks(String(Math.round(target))),
     );
   } catch (e) {
-    sendError(e);
+    sendError(e, "marker " + action);
   }
 }
 
@@ -292,7 +326,7 @@ async function runInOut(action) {
       });
     }
   } catch (e) {
-    sendError(e);
+    sendError(e, "inout " + action);
   }
 }
 
@@ -391,7 +425,7 @@ async function runPlayheadOp(action) {
     for (const item of under) selection.addItem(item, false);
     await seq.setSelection(selection);
   } catch (e) {
-    sendError(e);
+    sendError(e, "phead " + action);
   }
 }
 
@@ -431,7 +465,7 @@ async function runClipOp(action) {
       });
     }
   } catch (e) {
-    sendError(e);
+    sendError(e, "clip " + action);
   }
 }
 
@@ -459,7 +493,7 @@ async function runProjectOp(action) {
       return;
     }
   } catch (e) {
-    sendError(e);
+    sendError(e, "project " + action);
   }
 }
 
