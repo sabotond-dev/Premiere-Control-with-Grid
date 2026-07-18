@@ -51,11 +51,35 @@ VSN1 screen ◀──Lua──── Grid Editor ◀──same WebSocket──�
 | Modifier Hold     | button       | Hold Alt / Shift / Ctrl while the button is held                                                 |
 | Premiere Display  | VSN1 screen  | Playhead + selected clip status screen                                                           |
 
-Keyboard-backed entries type Premiere's **default shortcuts** as real
-USB keystrokes from the module itself (Premiere must be the focused
-app; remapped shortcuts won't match). API-backed entries (marked)
-run through the UXP plugin, are undoable, and work regardless of
-focus.
+### Native vs keyboard
+
+Premiere's UXP API is **read-heavy and edit-light**: it has no
+command/menu dispatch of any kind, so anything that is a menu item, a
+tool, or a UI toggle simply cannot be driven natively. Everything the
+API does expose is implemented natively here — those entries run
+through the plugin, are undoable, and work regardless of which app has
+focus:
+
+| Native (UXP API)                                       |
+| ------------------------------------------------------ |
+| Timeline Navigate, Marker add/next/prev, In/Out points |
+| Select all under playhead, Trim before / Trim after    |
+| Clip enable/disable, Delete selection                  |
+| Project save, Export (queue to Media Encoder)          |
+| Premiere Display readout (playhead + selected clip)    |
+
+The rest have **no API at all** and remain USB keystrokes sent by the
+module (Premiere must be the focused app, and remapped shortcuts won't
+match): Undo, Redo, Render, Cut under playhead, Speed/Duration, Audio
+Gain, Group, Ungroup, Copy, Paste, Selection/Razor tool, Snap toggle,
+Effect Controls panel, Modifier Hold, and Timeline Zoom.
+
+Two further caveats:
+
+- **Trim** does not ripple (the API has no ripple edit), so it leaves a
+  gap where Premiere's Q/W would close it.
+- **Timeline Zoom** is a Timeline-_panel_ shortcut, so it only acts
+  when that panel has keyboard focus, unlike app-level tool keys.
 
 ## Install (user)
 

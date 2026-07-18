@@ -296,8 +296,16 @@
         mods: [1, 2],
         code: 14,
       },
-      { value: "trimbefore", label: "Trim before - ripple Q", code: 20 },
-      { value: "trimafter", label: "Trim after - ripple W", code: 26 },
+      {
+        value: "trimbefore",
+        label: "Trim before playhead",
+        gps: ["phead", "trimbefore"],
+      },
+      {
+        value: "trimafter",
+        label: "Trim after playhead",
+        gps: ["phead", "trimafter"],
+      },
     ],
     "Edits at the playhead position. " + KEYS_NOTE,
   );
@@ -337,7 +345,11 @@
       { value: "save", label: "Save project", gps: ["project", "save"] },
       { value: "undo", label: "Undo (Ctrl+Z)", mods: [1], code: 29 },
       { value: "redo", label: "Redo (Ctrl+Shift+Z)", mods: [1, 2], code: 29 },
-      { value: "export", label: "Export… (Ctrl+M)", mods: [1], code: 16 },
+      {
+        value: "export",
+        label: "Export (queue to Media Encoder)",
+        gps: ["project", "export"],
+      },
       { value: "render", label: "Render in to out (Enter)", code: 40 },
     ],
     "Project-level commands. " + KEYS_NOTE,

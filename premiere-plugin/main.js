@@ -305,11 +305,50 @@ async function clipsUnderPlayhead(seq) {
   return under;
 }
 
+// Native trim: shorten the clips under the playhead up to it.
+// "before" keeps the tail (clip now starts at the playhead, its source
+// in-point advanced by the same delta so the picture does not shift);
+// "after" keeps the head (clip ends at the playhead). Neither ripples -
+// the UXP API has no ripple edit - so a gap is left behind, unlike
+// Premiere's Q/W. Undoable as one transaction.
+async function runTrim(seq, project, action) {
+  const under = await clipsUnderPlayhead(seq);
+  if (under.length === 0) return;
+  const pos = await seq.getPlayerPosition();
+  const p = pos.ticksNumber;
+
+  const actions = [];
+  for (const item of under) {
+    if (action === "trimafter") {
+      actions.push(item.createSetEndAction(pos));
+    } else {
+      const start = (await item.getStartTime()).ticksNumber;
+      const inPoint = (await item.getInPoint()).ticksNumber;
+      const shifted = ppro.TickTime.createWithTicks(
+        String(Math.round(inPoint + (p - start))),
+      );
+      actions.push(item.createSetInPointAction(shifted));
+      actions.push(item.createSetStartAction(pos));
+    }
+  }
+  if (actions.length === 0) return;
+  project.executeTransaction(
+    (compound) => {
+      for (const a of actions) compound.addAction(a);
+    },
+    action === "trimafter" ? "Trim after playhead" : "Trim before playhead",
+  );
+}
+
 async function runPlayheadOp(action) {
   try {
-    if (action !== "select") return;
-    const { seq } = await activeSequence();
+    const { project, seq } = await activeSequence();
     if (!seq) return sendError("No active sequence");
+
+    if (action === "trimbefore" || action === "trimafter") {
+      return await runTrim(seq, project, action);
+    }
+    if (action !== "select") return;
 
     const under = await clipsUnderPlayhead(seq);
     if (under.length === 0) return;
@@ -370,10 +409,27 @@ async function runClipOp(action) {
 
 async function runProjectOp(action) {
   try {
-    if (action !== "save") return;
-    const { project } = await activeSequence();
+    const { project, seq } = await activeSequence();
     if (!project) return sendError("No open project");
-    await project.save();
+
+    if (action === "save") {
+      await project.save();
+      return;
+    }
+
+    if (action === "export") {
+      if (!seq) return sendError("No active sequence");
+      const manager = await ppro.EncoderManager.getManager();
+      const queue =
+        (ppro.Constants &&
+          ppro.Constants.ExportType &&
+          ppro.Constants.ExportType.QUEUE_TO_AME) ??
+        undefined;
+      // Empty output/preset means "use the sequence's applied export
+      // settings"; queueing to Media Encoder keeps Premiere responsive.
+      await manager.exportSequence(seq, queue, "", "", true);
+      return;
+    }
   } catch (e) {
     sendError(e);
   }
