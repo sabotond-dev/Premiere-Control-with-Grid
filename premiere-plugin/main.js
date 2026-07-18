@@ -9,7 +9,7 @@
 
 const ppro = require("premierepro");
 
-const PLUGIN_VERSION = "1.2.2";
+const PLUGIN_VERSION = "1.2.4";
 const BRIDGE_URL = "ws://localhost:3543";
 const RECONNECT_MS = 2000;
 
@@ -319,10 +319,21 @@ async function runInOut(action) {
         compound.addAction(seq.createSetOutPointAction(pos));
       });
     } else if (action === "clear") {
-      const end = await seq.getEndTime();
+      // True clear: set both points to the invalid time, which unsets
+      // the marks (TIME_INVALID is undocumented but real, same as the
+      // TIME_ZERO the marker sample uses). Setting 0..end instead
+      // would not clear - it selects the whole sequence.
+      const invalid = ppro.TickTime?.TIME_INVALID;
+      logLine(`clear probe: TIME_INVALID=${String(invalid)}`);
+      if (!invalid) {
+        return sendError(
+          "This Premiere build exposes no TIME_INVALID - cannot clear in/out natively",
+          "inout clear",
+        );
+      }
       runTransaction(project, "Clear in/out", (compound) => {
-        compound.addAction(seq.createSetInPointAction(ppro.TickTime.TIME_ZERO));
-        compound.addAction(seq.createSetOutPointAction(end));
+        compound.addAction(seq.createSetInPointAction(invalid));
+        compound.addAction(seq.createSetOutPointAction(invalid));
       });
     }
   } catch (e) {
