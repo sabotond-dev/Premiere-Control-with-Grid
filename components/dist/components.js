@@ -469,11 +469,13 @@
         </label>
         <div class="pp-note">
           Zooms the Premiere timeline by synthesizing the native
-          Ctrl+scroll gesture as you turn this endless knob.
+          zoom-scroll gesture (Ctrl+scroll on Windows, Option+scroll on
+          macOS) as you turn this endless knob.
           <b>Hover the mouse over the timeline</b> while turning - the
           zoom lands wherever the cursor is, exactly like scrolling
-          yourself (no panel focus or keyboard layout involved).
-          Windows only for now.
+          yourself (no panel focus or keyboard layout involved). On
+          macOS, grant the Grid Editor Accessibility permission if
+          nothing happens.
         </div>`;
       this.appendChild(root);
       this.stepsInput = root.querySelector(".pp-steps");

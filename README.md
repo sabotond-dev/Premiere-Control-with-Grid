@@ -70,11 +70,14 @@ focus:
 
 **Timeline Zoom** takes a third route: Premiere has no zoom API and
 zoom keyboard shortcuts are keyboard-layout-dependent, so the package
-synthesizes the native **Ctrl+scroll gesture at the OS level** (a
-persistent SendInput helper; each knob burst becomes one wheel event
-with a multiplied delta). Hover the mouse over the timeline while
-turning — it lands wherever the cursor is, no panel focus needed.
-Windows only for now.
+synthesizes the native **zoom-scroll gesture at the OS level** — one
+wheel event per knob burst with a multiplied delta. On Windows a
+persistent SendInput helper emits Ctrl+wheel; on macOS a persistent
+JXA helper posts a CGEvent scroll carrying the Option modifier flag
+(grant the Grid Editor **Accessibility** permission in System
+Settings, or events are silently dropped). Hover the mouse over the
+timeline while turning — it lands wherever the cursor is, no panel
+focus needed.
 
 The rest have **no API at all** and remain USB keystrokes sent by the
 module (Premiere must be the focused app, and remapped shortcuts won't

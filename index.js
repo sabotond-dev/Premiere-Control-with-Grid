@@ -245,20 +245,63 @@ while ($true) {
 }
 `;
 
+// macOS: a persistent JXA helper posts the scroll event with the
+// Option modifier flag stamped directly on it (Option+scroll is
+// Premiere's timeline zoom gesture on macOS). Numeric constants are
+// used because the ObjC bridge does not reliably expose the enums:
+// units 1 = kCGScrollEventUnitLine, tap 0 = kCGHIDEventTap,
+// flags 0x00080000 = kCGEventFlagMaskAlternate (Option),
+// encoding 4 = NSUTF8StringEncoding. Requires the Grid Editor to have
+// Accessibility permission (System Settings > Privacy & Security).
+const ZOOM_HELPER_JXA = `
+ObjC.import('Cocoa');
+function post(n) {
+  var ev = $.CGEventCreateScrollWheelEvent($(), 1, 1, n);
+  $.CGEventSetFlags(ev, 0x00080000);
+  $.CGEventPost(0, ev);
+}
+var stdin = $.NSFileHandle.fileHandleWithStandardInput;
+var buf = '';
+while (true) {
+  var data = stdin.availableData;
+  if (Number(data.length) === 0) break;
+  buf += ObjC.unwrap($.NSString.alloc.initWithDataEncoding(data, 4));
+  var lines = buf.split('\\n');
+  buf = lines.pop();
+  for (var i = 0; i < lines.length; i++) {
+    var n = parseInt(lines[i], 10);
+    if (n) post(n);
+  }
+}
+`;
+
 let zoomProc = undefined;
 let zoomAccum = 0;
 let zoomTimer = undefined;
 
-function ensureZoomHelper() {
-  if (zoomProc || packageShutDown) return;
-  if (process.platform !== "win32" || process.env.GRID_PP_DISABLE_ZOOM) return;
-  try {
+function spawnZoomHelper() {
+  if (process.platform === "win32") {
     const encoded = Buffer.from(ZOOM_HELPER_PS, "utf16le").toString("base64");
-    zoomProc = spawn(
+    return spawn(
       "powershell.exe",
       ["-NoProfile", "-NoLogo", "-NonInteractive", "-EncodedCommand", encoded],
       { stdio: ["pipe", "ignore", "ignore"], windowsHide: true },
     );
+  }
+  if (process.platform === "darwin") {
+    return spawn("osascript", ["-l", "JavaScript", "-e", ZOOM_HELPER_JXA], {
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+  }
+  return undefined;
+}
+
+function ensureZoomHelper() {
+  if (zoomProc || packageShutDown) return;
+  if (process.env.GRID_PP_DISABLE_ZOOM) return;
+  try {
+    zoomProc = spawnZoomHelper();
+    if (!zoomProc) return;
     zoomProc.on("exit", () => {
       zoomProc = undefined;
     });
