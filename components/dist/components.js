@@ -516,7 +516,7 @@
       const root = document.createElement("div");
       root.className = "pp-root";
       root.innerHTML = `
-        <label class="pp-field">
+        <label class="pp-field pp-slot-row">
           <span>Slot</span>
           <select class="pp-input pp-slot">
             ${[1, 2, 3, 4, 5, 6, 7, 8]
@@ -530,6 +530,7 @@
             <option value="live">Send value - Live picture</option>
             <option value="clean">Send value - Clean undo</option>
             <option value="reset">Reset to default (button)</option>
+            <option value="learn">Learn binding (button)</option>
           </select>
         </label>
         <label class="pp-field pp-control-row">
@@ -554,13 +555,17 @@
           shows the moving value only on the module screen and commits
           a single undo entry half a second after you stop.
           <b>Reset</b> goes on the knob's press (Button event) and
-          snaps the parameter back to its default.
+          snaps the parameter back to its default. <b>Learn</b> also
+          goes on a button: press it, nudge any supported parameter in
+          Premiere, then move the Grid control to bind - all without
+          touching the Editor (press again to cancel).
         </div>`;
       this.appendChild(root);
       this.slotSel = root.querySelector(".pp-slot");
       this.modeSel = root.querySelector(".pp-mode");
       this.controlSel = root.querySelector(".pp-control");
       this.stepInput = root.querySelector(".pp-step");
+      this.slotRow = root.querySelector(".pp-slot-row");
       this.controlRow = root.querySelector(".pp-control-row");
       this.stepRow = root.querySelector(".pp-step-row");
       const onChange = () => {
@@ -580,15 +585,20 @@
       this.stepInput.addEventListener("input", onChange);
     }
 
-    // The control/step rows only apply to the value-sending forms
-    // (and step only to the relative one).
+    // The slot/control/step rows only apply to the forms that use
+    // them: learn is global (no slot), step only fits the relative
+    // value form.
     syncRows() {
+      const isValue = this.mode === "live" || this.mode === "clean";
+      if (this.slotRow) {
+        this.slotRow.style.display = this.mode === "learn" ? "none" : "";
+      }
       if (this.controlRow) {
-        this.controlRow.style.display = this.mode === "reset" ? "none" : "";
+        this.controlRow.style.display = isValue ? "" : "none";
       }
       if (this.stepRow) {
         this.stepRow.style.display =
-          this.mode === "reset" || this.control !== "relative" ? "none" : "";
+          isValue && this.control === "relative" ? "" : "none";
       }
     }
 
@@ -597,6 +607,9 @@
       if (m) {
         this.slot = Number(m[1]);
         this.mode = "reset";
+      } else if ((m = script.match(/"pmap",\s*(\d+),\s*"learn"/))) {
+        this.slot = Number(m[1]);
+        this.mode = "learn";
       } else if (
         (m = script.match(
           /"pmap",\s*(\d+),\s*"delta",[\s\S]*?\*\s*([\d.]+),\s*(\d)\s*\)/,
@@ -625,6 +638,13 @@
           `if self:bst()>0 then if self.pprs~=1 then self.pprs=1 ` +
           `gps("${PKG}", "pmap", ${this.slot}, "reset") end ` +
           `else self.pprs=0 end`
+        );
+      }
+      if (this.mode === "learn") {
+        return (
+          `if self:bst()>0 then if self.pplb~=1 then self.pplb=1 ` +
+          `gps("${PKG}", "pmap", ${this.slot}, "learn") end ` +
+          `else self.pplb=0 end`
         );
       }
       const clean = this.mode === "clean" ? 1 : 0;
@@ -744,11 +764,13 @@
           <div class="pp-note pp-learn-status" style="margin-top:4px;"></div>
           <div class="pp-bindings" style="margin-top:4px;"></div>
           <div class="pp-note" style="margin-top:6px;">
-            Click <b>Learn binding</b>, drag any supported parameter in
-            Premiere (Opacity, Motion Scale/Rotation, the Lumetri Basic
-            sliders, Volume), then move the Grid fader or knob that
-            carries a <b>Param Map</b> block. The slot binds to the
-            parameter and is remembered.
+            Click <b>Learn binding</b> (or press a Param Map block set
+            to <b>Learn</b> on any Grid button), drag any supported
+            parameter in Premiere (Opacity, Motion
+            Scale/Rotation/Position X/Y, the Lumetri Basic sliders,
+            Volume), then move the Grid fader or knob that carries a
+            <b>Param Map</b> block. The slot binds to the parameter
+            and is remembered.
           </div>
         </div>
         <button class="pp-input pp-open-folder" style="cursor:pointer;flex:none;">

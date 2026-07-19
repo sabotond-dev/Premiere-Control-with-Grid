@@ -1,6 +1,6 @@
 {
   "name": "package-premiere-pro",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Premiere Pro package",
   "main": "index.js",
   "scripts": {

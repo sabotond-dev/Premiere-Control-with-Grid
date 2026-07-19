@@ -79,9 +79,42 @@ function clearLearn() {
 function bindingSummaries() {
   const out = {};
   for (const [slot, b] of Object.entries(pmapBindings)) {
-    out[slot] = `${b.compName}: ${b.paramName}`;
+    out[slot] = `${b.compName}: ${b.label ?? b.paramName}`;
   }
   return out;
+}
+
+// Arm (or cancel) learn mode - shared by the preference-panel button
+// and the hardware Learn block. Returns after notifying everyone.
+function toggleLearn() {
+  if (learnState) {
+    clearLearn();
+    sendToPanel({ cmd: "pmap", action: "learn-cancel" });
+    controller?.sendMessageToEditor({
+      type: "show-message",
+      message: "Learn cancelled",
+      messageType: "success",
+    });
+    notifyStatusChange();
+    return;
+  }
+  if (!isPanelConnected) {
+    controller?.sendMessageToEditor({
+      type: "show-message",
+      message: "Learn needs the Premiere plugin connected",
+      messageType: "fail",
+    });
+    return;
+  }
+  learnState = "watch";
+  sendToPanel({ cmd: "pmap", action: "learn" });
+  controller?.sendMessageToEditor({
+    type: "show-message",
+    message:
+      "Learn armed - drag a parameter in Premiere, then move a Grid control",
+    messageType: "success",
+  });
+  notifyStatusChange();
 }
 
 function notifyStatusChange() {
@@ -531,7 +564,8 @@ function handlePanelMessage(data) {
       controller?.sendMessageToEditor({
         type: "show-message",
         message:
-          `Learn: found ${msg.param.compName} / ${msg.param.paramName} - ` +
+          `Learn: found ${msg.param.compName} / ` +
+          `${msg.param.label ?? msg.param.paramName} - ` +
           `now move the Grid control that should drive it`,
         messageType: "success",
       });
@@ -780,22 +814,9 @@ exports.addMessagePort = async function (port, senderId) {
       } else if (e.data?.type === "pmap-probe") {
         sendToPanel({ cmd: "pmap", action: "probe" });
       } else if (e.data?.type === "pmap-learn") {
-        if (!isPanelConnected) {
-          controller?.sendMessageToEditor({
-            type: "show-message",
-            message: "Learn needs the Premiere plugin connected",
-            messageType: "fail",
-          });
-        } else {
-          clearLearn();
-          learnState = "watch";
-          sendToPanel({ cmd: "pmap", action: "learn" });
-          notifyStatusChange();
-        }
+        if (!learnState) toggleLearn();
       } else if (e.data?.type === "pmap-learn-cancel") {
-        clearLearn();
-        sendToPanel({ cmd: "pmap", action: "learn-cancel" });
-        notifyStatusChange();
+        if (learnState) toggleLearn();
       } else if (e.data?.type === "pmap-clear") {
         delete pmapBindings[String(e.data.slot)];
         persistData();
@@ -896,6 +917,13 @@ exports.sendMessage = async function (args) {
       return;
     }
 
+    // args: ["pmap", slot, "learn"] - the hardware Learn button form
+    // (slot is ignored; a second press cancels an armed learn).
+    if (args[2] === "learn") {
+      toggleLearn();
+      return;
+    }
+
     // Two value forms:
     //   ["pmap", slot, value, mode]          - absolute (fader 0..127)
     //   ["pmap", slot, "delta", step, mode]  - relative (endless knob,
@@ -918,7 +946,9 @@ exports.sendMessage = async function (args) {
       sendBindingsToPanel();
       controller?.sendMessageToEditor({
         type: "show-message",
-        message: `Slot ${slot} mapped to ${bound.compName} / ${bound.paramName}`,
+        message:
+          `Slot ${slot} mapped to ${bound.compName} / ` +
+          `${bound.label ?? bound.paramName}`,
         messageType: "success",
       });
       notifyStatusChange();

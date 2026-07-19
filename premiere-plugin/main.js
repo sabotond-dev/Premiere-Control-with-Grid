@@ -9,7 +9,7 @@
 
 const ppro = require("premierepro");
 
-const PLUGIN_VERSION = "1.4.0";
+const PLUGIN_VERSION = "1.4.1";
 const BRIDGE_URL = "ws://localhost:3543";
 const RECONNECT_MS = 2000;
 
@@ -585,6 +585,28 @@ const BLESSED = [
     max: 180,
     def: 0,
   },
+  // Position is a PointF; each axis is its own learnable entry. During
+  // learn the axis with the larger change wins, so scrubbing the X
+  // value in Effect Controls binds X only. Frame-normalized 0..1
+  // (0.5 = centered); writes replace one axis and keep the other.
+  {
+    comp: /^AE\.ADBE Motion$|^Motion$/,
+    name: /^Position$/,
+    axis: 0,
+    label: "Position X",
+    min: 0,
+    max: 1,
+    def: 0.5,
+  },
+  {
+    comp: /^AE\.ADBE Motion$|^Motion$/,
+    name: /^Position$/,
+    axis: 1,
+    label: "Position Y",
+    min: 0,
+    max: 1,
+    def: 0.5,
+  },
   { comp: /Lumetri/i, name: /^Temperature$/, min: -100, max: 100, def: 0 },
   { comp: /Lumetri/i, name: /^Tint$/, min: -100, max: 100, def: 0 },
   { comp: /Lumetri/i, name: /^Saturation$/, min: 0, max: 300, def: 100 },
@@ -707,7 +729,9 @@ async function clipKeyOf(item) {
 
 // Scan a clip's component chain for the blessed params. Returns
 // [{comp, param, compMatch, compName, paramIndex, paramName, spec}] -
-// one entry per blessed spec at most, first index match wins.
+// one entry per blessed spec at most, first index match wins. A
+// multi-axis param (Position) matches several specs and yields one
+// entry per axis, all sharing the param handle.
 async function scanBlessedParams(project, item) {
   const chain = await item.getComponentChain();
   const refs = collectComponentRefs(project, chain);
@@ -734,21 +758,37 @@ async function scanBlessedParams(project, item) {
           paramName,
           spec,
         });
-        break;
       }
     }
   }
   return found;
 }
 
-async function readParamValue(param) {
+// Raw keyframe value: a number for scalars, an [x, y] array for point
+// params, null for anything unreadable.
+async function readParamRaw(param) {
   try {
     const kf = await param.getStartValue();
     const v = kf?.value?.value ?? kf?.value ?? null;
-    return typeof v === "number" ? v : null;
+    if (typeof v === "number") return v;
+    if (Array.isArray(v) && v.length >= 2) return [Number(v[0]), Number(v[1])];
+    // Some builds may hand back a PointF-like object instead of an
+    // array - normalize it so axis math works either way.
+    if (v && typeof v.x === "number" && typeof v.y === "number") {
+      return [v.x, v.y];
+    }
+    return null;
   } catch (e) {
     return null;
   }
+}
+
+// The value a binding sees: the picked axis of a point, or the scalar.
+function bindingValueOf(raw, axis) {
+  if (typeof axis === "number") {
+    return Array.isArray(raw) ? raw[axis] : null;
+  }
+  return typeof raw === "number" ? raw : null;
 }
 
 // --- Learn by wiggle -------------------------------------------------
@@ -771,11 +811,14 @@ async function buildLearnWatch() {
     return {
       error:
         "No supported parameters on this clip - supported: Opacity, " +
-        "Motion Scale/Rotation, Lumetri Basic, Volume",
+        "Motion Scale/Rotation/Position, Lumetri Basic, Volume",
     };
   }
   for (const entry of entries) {
-    entry.last = await readParamValue(entry.param);
+    entry.last = bindingValueOf(
+      await readParamRaw(entry.param),
+      entry.spec.axis,
+    );
   }
   return { clipKey, watch: entries };
 }
@@ -820,27 +863,42 @@ function learnTick() {
           learn.clipKey = built.clipKey;
         }
       } else {
+        // Diff every watched entry first, then pick the strongest
+        // change relative to its span - a program-monitor drag moves
+        // Position X and Y together, and the dominant axis should win.
+        let best = null;
         for (const entry of learn.watch) {
-          const v = await readParamValue(entry.param);
+          const v = bindingValueOf(
+            await readParamRaw(entry.param),
+            entry.spec.axis,
+          );
           if (v === null || entry.last === null) {
             entry.last = v;
             continue;
           }
           if (v !== entry.last) {
-            const d = {
-              compMatch: entry.compMatch,
-              compName: entry.compName,
-              paramIndex: entry.paramIndex,
-              paramName: entry.paramName,
-              min: entry.spec.min,
-              max: entry.spec.max,
-              def: entry.spec.def,
-            };
-            stopLearn();
-            logLine(`learn found: ${d.compName} / ${d.paramName}`);
-            send({ type: "pmap-learn", param: d });
-            return;
+            const span = entry.spec.max - entry.spec.min || 1;
+            const strength = Math.abs(v - entry.last) / span;
+            if (!best || strength > best.strength) best = { entry, strength };
           }
+        }
+        if (best) {
+          const entry = best.entry;
+          const d = {
+            compMatch: entry.compMatch,
+            compName: entry.compName,
+            paramIndex: entry.paramIndex,
+            paramName: entry.paramName,
+            axis: entry.spec.axis,
+            label: entry.spec.label,
+            min: entry.spec.min,
+            max: entry.spec.max,
+            def: entry.spec.def,
+          };
+          stopLearn();
+          logLine(`learn found: ${d.compName} / ${d.label ?? d.paramName}`);
+          send({ type: "pmap-learn", param: d });
+          return;
         }
       }
     } catch (e) {
@@ -913,7 +971,7 @@ function pushValue(slot, binding, state, value, clean) {
   send({
     type: "pmval",
     slot,
-    name: binding.paramName,
+    name: binding.label ?? binding.paramName,
     text: formatParamValue(value),
   });
   state.pending = value;
@@ -963,7 +1021,12 @@ async function queueParamDelta(slot, delta, clean) {
     let current = null;
     try {
       const target = await resolveSlot(slot);
-      if (target?.param) current = await readParamValue(target.param);
+      if (target?.param) {
+        current = bindingValueOf(
+          await readParamRaw(target.param),
+          binding.axis,
+        );
+      }
     } catch (e) {
       /* fall back to the default below */
     }
@@ -995,10 +1058,27 @@ async function resetParamValue(slot) {
   send({
     type: "pmval",
     slot,
-    name: binding.paramName,
+    name: binding.label ?? binding.paramName,
     text: formatParamValue(binding.def),
   });
   await applySlot(slot);
+}
+
+// Best-effort PointF construction: the UXP surface for point values
+// is undocumented, so try the likely shapes and let the keyframe call
+// surface a step-tagged error if none fit this Premiere build.
+function makePoint(x, y) {
+  if (ppro.PointF) {
+    try {
+      if (typeof ppro.PointF.create === "function") {
+        return ppro.PointF.create(x, y);
+      }
+    } catch (e) {}
+    try {
+      return new ppro.PointF(x, y);
+    } catch (e) {}
+  }
+  return [x, y];
 }
 
 async function applySlot(slot) {
@@ -1009,24 +1089,36 @@ async function applySlot(slot) {
   if (typeof v === "undefined") return;
   const binding = pmapBindings[String(slot)];
   if (!binding) return;
+  const shownName = binding.label ?? binding.paramName;
   try {
     const target = await resolveSlot(slot);
     if (!target || !target.param) {
       pmapError(
-        `${binding.paramName}: no matching effect on the selected clip`,
+        `${shownName}: no matching effect on the selected clip`,
         "pmap",
       );
       return;
     }
     const { param, project } = target;
+
+    // Axis bindings write a full point with only their axis replaced,
+    // so Position X leaves Y exactly where it was (and vice versa).
+    let keyframeValue = v;
+    if (typeof binding.axis === "number") {
+      const raw = await readParamRaw(param);
+      const point = Array.isArray(raw) ? [...raw] : [0.5, 0.5];
+      point[binding.axis] = v;
+      keyframeValue = makePoint(point[0], point[1]);
+    }
+
     let success = false;
     project.lockedAccess(() => {
       success = project.executeTransaction((compound) => {
-        const kf = param.createKeyframe(v);
+        const kf = param.createKeyframe(keyframeValue);
         compound.addAction(param.createSetValueAction(kf, true));
-      }, `Grid: ${binding.paramName}`);
+      }, `Grid: ${shownName}`);
     });
-    if (success) logLine(`${binding.paramName} -> ${formatParamValue(v)}`);
+    if (success) logLine(`${shownName} -> ${formatParamValue(v)}`);
   } catch (e) {
     // A stale cached param handle (deleted effect) throws here; drop
     // the cache so the next move re-resolves.
