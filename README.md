@@ -1,10 +1,11 @@
 # package-premiere-pro
 
 Control Adobe Premiere Pro from Grid modules. Jog the timeline with an
-endless knob, drop and jump between markers, set in/out points — and
-see the playhead position plus the selected clip on a VSN1 module
-screen. Everything runs through Premiere's native UXP API, with no
-keyboard shortcuts or key emulation.
+endless knob, drop and jump between markers, set in/out points, ride
+effect parameters (Lumetri, Motion, Opacity, Volume) with learned knob
+bindings — and see the playhead position plus the selected clip on a
+VSN1 module screen. Everything runs through Premiere's native UXP API,
+with no keyboard shortcuts or key emulation.
 
 Built in the shape of the official Grid packages (Photoshop,
 Lightroom Classic): an editor-side Node package that registers the
@@ -49,7 +50,8 @@ VSN1 screen ◀──Lua──── Grid Editor ◀──same WebSocket──�
 | Tool              | button       | Selection / Razor tool                                                                           |
 | View              | button       | Snap toggle, Effect Controls panel                                                               |
 | Modifier Hold     | button       | Hold Alt / Shift / Ctrl while the button is held                                                 |
-| Premiere Display  | VSN1 screen  | Playhead + selected clip status screen                                                           |
+| Param Map         | knob / fader | Drive a learned effect parameter (see Parameter mapping below)                                   |
+| Premiere Display  | VSN1 screen  | Playhead + selected clip + last-touched parameter status screen                                  |
 
 ### Native vs keyboard
 
@@ -66,6 +68,7 @@ focus:
 | Select all under playhead, Trim before / Trim after    |
 | Clip enable/disable, Delete selection                  |
 | Project save, Export (queue to Media Encoder)          |
+| Param Map (effect parameter rides + learn-by-wiggle)   |
 | Premiere Display readout (playhead + selected clip)    |
 
 **Timeline Zoom** takes a third route: Premiere has no zoom API and
@@ -87,6 +90,40 @@ Effect Controls panel, and Modifier Hold.
 
 One further caveat: **Trim** does not ripple (the API has no ripple
 edit), so it leaves a gap where Premiere's Q/W would close it.
+
+## Parameter mapping
+
+Grid knobs and faders can drive effect parameters on the selected clip
+through eight mapping **slots**. A slot is paired with a parameter by
+**learn-by-wiggle**:
+
+1. Click **Learn binding** in the package preferences.
+2. Drag any supported parameter in Premiere's UI.
+3. Move the Grid control carrying a **Param Map** block — that slot
+   now drives the parameter, and the binding is remembered.
+
+**Supported parameters** (the UXP API exposes no min/max, so ranges
+are hardcoded per parameter): Opacity, Motion Scale and Rotation, the
+Lumetri Basic sliders (Temperature, Tint, Saturation, Exposure,
+Contrast, Highlights, Shadows, Whites, Blacks) and audio Volume.
+
+**Control forms.** An **endless knob** works relatively: each detent
+nudges the current value by the block's _Step / click_ (down to 0.01
+for fine rides); the running value seeds from the parameter itself and
+re-syncs after 2 s of quiet, so mouse edits and undo are respected. A
+**fader** works absolutely: its physical position maps onto the
+parameter's full range.
+
+**Write modes.** The API has no transient write path — every commit
+lands one undo entry (same for every control surface out there). So
+each block chooses: **Live picture** commits ~10×/s while you turn for
+instant feedback at the cost of undo noise, or **Clean undo** streams
+the moving value only to the module screen and commits a **single**
+undo entry half a second after you stop. Either way the parameter name
+and value appear on the Premiere Display panel as you turn.
+
+A third block form, **Reset to default**, goes on the knob's press
+(Button event) and snaps the parameter back to its default value.
 
 ## Install (user)
 
@@ -111,6 +148,7 @@ immediate scripts:
 - `ppcn` — selected clip's filename (fitted for the module font,
   21-char ellipsis truncation, accents mapped to base letters)
 - `ppct` — selected clip's channel ("Video 1", "Audio 2"...)
+- `ppmn` / `ppmv` — last-touched mapped parameter's name and value
 
 The **Premiere Display** block draws them from INSIDE the screen's
 draw event — anything painted from outside is overwritten by the
@@ -135,6 +173,10 @@ timeline) — Adobe exposes no mouse-hover API to plugins.
   Adobe UXP Developer Tool instead of reinstalling the ccx.
 - Editor-side changes: **Force Restart** in the package manager.
   Component changes: restart the editor frontend.
+- **Bump `premiere-plugin/manifest.json`'s `version` on every `.ccx`
+  rebuild that users must install** — Creative Cloud can silently keep
+  the installed copy when the manifest version is unchanged. The panel
+  status line shows the running build (`PLUGIN_VERSION`) to verify.
 - `GRID_PP_BRIDGE_PORT` overrides the WebSocket port (used by tests so
   they can run beside a live editor).
 

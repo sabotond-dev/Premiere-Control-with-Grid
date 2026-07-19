@@ -9,7 +9,7 @@
 
 const ppro = require("premierepro");
 
-const PLUGIN_VERSION = "1.4.0-beta.2";
+const PLUGIN_VERSION = "1.4.0";
 const BRIDGE_URL = "ws://localhost:3543";
 const RECONNECT_MS = 2000;
 
