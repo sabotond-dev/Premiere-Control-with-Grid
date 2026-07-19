@@ -1,6 +1,6 @@
 # Grid Premiere Pro package
 
-Control Adobe Premiere Pro from Grid. Jog the timeline from an endless
+Control Adobe Premiere Pro with Grid. Jog the timeline from an endless
 knob, drop markers, set in and out points, ride Lumetri and Motion
 parameters from your controls, and read the playhead off a VSN1 screen.
 Everything that can run through Premiere's own API does. No keyboard
