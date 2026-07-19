@@ -106,10 +106,9 @@
           <input class="pp-input pp-frames" type="number" min="1" max="240" value="1" />
         </label>
         <div class="pp-note">
-          Turn this endless knob to jog the Premiere playhead. Each detent
-          moves the frame count above; hold shift-layers or a faster twist
-          cover more ground. Premiere must be open with the Grid Control
-          plugin panel open (see the package preferences for setup).
+          Put this on an endless knob. Every turn jogs the playhead by
+          the frame count above, frame-accurate, through Premiere's own
+          API. Needs the Grid Control panel open in Premiere.
         </div>`;
       this.appendChild(root);
       this.framesInput = root.querySelector(".pp-frames");
@@ -149,7 +148,10 @@
             <option value="prev">Go to previous marker</option>
           </select>
         </label>
-        <div class="pp-note">Best on a button's Button event.</div>`;
+        <div class="pp-note">
+          Put this on a button. Markers land at the playhead, undoable,
+          no matter which app has focus.
+        </div>`;
       this.appendChild(root);
       this.sel = root.querySelector(".pp-action");
       this.sel.addEventListener("change", () => {
@@ -190,7 +192,10 @@
             <option value="clear">Clear in and out</option>
           </select>
         </label>
-        <div class="pp-note">Sets the active sequence's work-area points.</div>`;
+        <div class="pp-note">
+          Marks the active sequence at the playhead. Clear unsets both
+          points.
+        </div>`;
       this.appendChild(root);
       this.sel = root.querySelector(".pp-action");
       this.sel.addEventListener("change", () => {
@@ -294,9 +299,9 @@
   }
 
   const KEYS_NOTE =
-    "Keyboard-backed entries type Premiere's default shortcut from the " +
-    "module itself - Premiere must be the focused app. API-backed " +
-    "entries run through the Grid Control plugin.";
+    "Entries with a shortcut in the name type that shortcut from the " +
+    "module: Premiere must be focused, and remapped shortcuts will not " +
+    "match. The rest run through Premiere's API and work from anywhere.";
 
   const ToolAction = makeDropdownAction(
     "pptool",
@@ -304,7 +309,7 @@
       { value: "selection", label: "Selection tool (V)", code: 25 },
       { value: "razor", label: "Razor tool (C)", code: 6 },
     ],
-    "Switches the active Premiere tool. " + KEYS_NOTE,
+    "Switches the active tool. " + KEYS_NOTE,
   );
 
   const PlayheadAction = makeDropdownAction(
@@ -332,7 +337,9 @@
         gps: ["phead", "trimafter"],
       },
     ],
-    "Edits at the playhead position. " + KEYS_NOTE,
+    "Acts on everything under the playhead. Trims do not ripple; they " +
+      "leave a gap where Q and W would close it. " +
+      KEYS_NOTE,
   );
 
   const ClipAction = makeDropdownAction(
@@ -361,7 +368,7 @@
       { value: "copy", label: "Copy (Ctrl+C)", mods: [1], code: 6 },
       { value: "paste", label: "Paste (Ctrl+V)", mods: [1], code: 25 },
     ],
-    "Acts on the clips selected in the timeline. " + KEYS_NOTE,
+    "Acts on the selected clips. " + KEYS_NOTE,
   );
 
   const ProjectAction = makeDropdownAction(
@@ -377,7 +384,7 @@
       },
       { value: "render", label: "Render in to out (Enter)", code: 40 },
     ],
-    "Project-level commands. " + KEYS_NOTE,
+    "Project-wide commands. " + KEYS_NOTE,
   );
 
   const ViewAction = makeDropdownAction(
@@ -424,9 +431,9 @@
           </select>
         </label>
         <div class="pp-note">
-          The key is held down while this Grid button is held - use it
-          with the mouse for alt-drag duplicating, shift multi-select
-          and similar gestures. Premiere must be the focused app.
+          The key stays down for as long as the button does. Made for
+          mouse gestures: Alt-drag to duplicate, Shift-click to
+          multi-select. Premiere must be the focused app.
         </div>`;
       this.appendChild(root);
       this.sel = root.querySelector(".pp-action");
@@ -450,7 +457,7 @@
   }
 
   // --- Timeline Zoom ---------------------------------------------------
-  // Endless knob: signed detent delta to the package, which synthesizes
+  // Endless knob: signed step delta to the package, which synthesizes
   // a native Ctrl+scroll gesture at the OS level (keyboard shortcuts
   // are layout-dependent and Premiere has no zoom API).
   function zoomScript(steps) {
@@ -464,18 +471,15 @@
       root.className = "pp-root";
       root.innerHTML = `
         <label class="pp-field">
-          <span>Steps / detent</span>
+          <span>Speed</span>
           <input class="pp-input pp-steps" type="number" min="1" max="10" value="1" />
         </label>
         <div class="pp-note">
-          Zooms the Premiere timeline by synthesizing the native
-          zoom-scroll gesture (Ctrl+scroll on Windows, Option+scroll on
-          macOS) as you turn this endless knob.
-          <b>Hover the mouse over the timeline</b> while turning - the
-          zoom lands wherever the cursor is, exactly like scrolling
-          yourself (no panel focus or keyboard layout involved). On
-          macOS, grant the Grid Editor Accessibility permission if
-          nothing happens.
+          Turning this endless knob plays Premiere's own zoom gesture
+          at OS level: Ctrl+scroll on Windows, Option+scroll on macOS.
+          <b>Hover the timeline</b> while you turn and the zoom lands
+          under the cursor, exactly like scrolling yourself. On macOS,
+          grant the Grid Editor Accessibility permission first.
         </div>`;
       this.appendChild(root);
       this.stepsInput = root.querySelector(".pp-steps");
@@ -503,10 +507,10 @@
   // --- Param Map -------------------------------------------------------
   // Drives a numbered mapping slot from a knob or fader, or resets the
   // slot's parameter to its default from a button press. Which Premiere
-  // parameter a slot drives is learned by wiggle from the package
-  // preferences. Two control forms: relative (endless knob, signed
-  // detent delta x a per-click step - fine, even increments) and
-  // absolute (fader position 0..127 mapped onto the whole range).
+  // parameter a slot drives is learned by wiggle. Two control forms:
+  // relative (endless knob, signed step delta x a step size - fine,
+  // even increments) and absolute (fader position 0..127 mapped onto
+  // the whole range).
   class PmapAction extends PremiereActionElement {
     render() {
       this.slot = 1;
@@ -541,24 +545,21 @@
           </select>
         </label>
         <label class="pp-field pp-step-row">
-          <span>Step / click</span>
+          <span>Step size</span>
           <input class="pp-input pp-step" type="number"
             min="0.01" max="50" step="0.01" value="1" />
         </label>
         <div class="pp-note">
-          Map a slot to a Premiere effect parameter with <b>Learn</b> in
-          the package preferences. <b>Endless knob</b> nudges the value
-          by the step above per detent (set 0.1 for fine rides; fast
-          twists cover ground quicker). <b>Fader</b> maps the physical
-          position onto the parameter's full range. <b>Live picture</b>
-          updates Premiere ~10×/s while you turn; <b>Clean undo</b>
-          shows the moving value only on the module screen and commits
-          a single undo entry half a second after you stop.
-          <b>Reset</b> goes on the knob's press (Button event) and
-          snaps the parameter back to its default. <b>Learn</b> also
-          goes on a button: press it, nudge any supported parameter in
-          Premiere, then move the Grid control to bind - all without
-          touching the Editor (press again to cancel).
+          Each slot drives one learned parameter.<br />
+          <b>Endless knob</b> moves the value by the step size above.
+          Set 0.1 for fine rides, 0.01 for Position.<br />
+          <b>Fader</b> maps its position onto the full range.<br />
+          <b>Live picture</b> follows the knob in Premiere, one undo
+          entry per update. <b>Clean undo</b> shows the value on the
+          module screen and commits once after you stop.<br />
+          <b>Reset</b> and <b>Learn</b> go on button presses: Reset
+          returns the parameter to its default, Learn arms a new
+          binding (press again to cancel).
         </div>`;
       this.appendChild(root);
       this.slotSel = root.querySelector(".pp-slot");
@@ -668,21 +669,14 @@
       root.className = "pp-root";
       root.innerHTML = `
         <div class="pp-note">
-          Draws the Premiere status screen on a VSN1: clip name and
-          channel of the clip selected in the timeline, the last mapped
-          parameter you touched with its value, plus the playhead
-          position as <span class="pp-code">hh:mm:ss:ff</span>, each in
-          its own outlined panel. Add this block to the screen
-          element's <b>Draw</b> event. It repaints only when something
-          changes and shows <span class="pp-code">--:--:--:--</span>
-          while Premiere or the panel is closed. Raw values are the
-          module Lua globals <span class="pp-code">pptc</span>,
-          <span class="pp-code">ppcn</span>,
-          <span class="pp-code">ppct</span>,
-          <span class="pp-code">ppmn</span> and
-          <span class="pp-code">ppmv</span> for custom layouts.
-          (Blocks placed before the parameter panel existed keep their
-          old three-panel layout - remove and re-add to upgrade.)
+          The Premiere status screen for a VSN1: selected clip, its
+          channel, the last touched parameter, and the playhead as
+          <span class="pp-code">hh:mm:ss:ff</span>.<br />
+          Add this block to the screen element's <b>Draw</b> event. It
+          repaints only when a value changes and shows dashes while
+          Premiere is closed.<br />
+          For your own layouts, the raw values live in the Lua globals
+          <span class="pp-code">pptc ppcn ppct ppmn ppmv</span>.
         </div>`;
       this.appendChild(root);
     }
@@ -732,28 +726,25 @@
           <span class="pp-dot pp-off"></span>
           <span class="pp-state">Premiere panel not connected</span>
         </div>
+        <div class="pp-note">
+          <b>Setup</b>
+          <ol class="pp-steps" style="padding-left:16px;margin:6px 0;">
+            <li>Open the plugin folder below, double-click the
+              <span class="pp-code">.ccx</span> file. Creative Cloud
+              installs it.</li>
+            <li>In Premiere, open the <b>Grid Control</b> panel and
+              keep it open.</li>
+            <li>Green dot above means connected.</li>
+          </ol>
+          Local connection only. Commands run through Premiere's own
+          API, not keystrokes.
+        </div>
         <label class="pp-field" style="cursor:pointer;">
           <input type="checkbox" class="pp-screen" checked
             style="accent-color:#14ce96;flex:none;" />
-          <span style="min-width:0;">Send playhead timecode to modules
-            (the <span class="pp-code">pptc</span> Lua global)</span>
+          <span style="min-width:0;">Stream the readout to module
+            screens (the <b>Premiere Display</b> block)</span>
         </label>
-        <div class="pp-note">
-          <ol class="pp-steps" style="padding-left:16px;margin:6px 0;">
-            <li>Open the plugin folder below and double-click the
-              <span class="pp-code">.ccx</span> file to install the Grid
-              Control plugin into Premiere via Creative Cloud.</li>
-            <li>In Premiere, open the <b>Grid Control</b> panel from the
-              plugins/window menu and keep it open while you work.</li>
-            <li>The dot above turns green when the plugin connects.</li>
-          </ol>
-          The connection is local only (<span class="pp-code">ws://127.0.0.1:3543</span>).
-          Timeline, marker and in/out commands run through Premiere's own
-          UXP API — no keyboard emulation. To see the playhead and the
-          selected clip on a VSN1 screen, add the <b>Premiere Display</b>
-          block to the screen element's Draw event; this toggle controls
-          whether the readout values are streamed to the modules at all.
-        </div>
         <div style="border-top:1px solid rgba(255,255,255,0.14);padding-top:8px;">
           <div class="pp-field" style="justify-content:space-between;">
             <span style="min-width:0;"><b>Parameter mapping</b></span>
@@ -764,13 +755,10 @@
           <div class="pp-note pp-learn-status" style="margin-top:4px;"></div>
           <div class="pp-bindings" style="margin-top:4px;"></div>
           <div class="pp-note" style="margin-top:6px;">
-            Click <b>Learn binding</b> (or press a Param Map block set
-            to <b>Learn</b> on any Grid button), drag any supported
-            parameter in Premiere (Opacity, Motion
-            Scale/Rotation/Position X/Y, the Lumetri Basic sliders,
-            Volume), then move the Grid fader or knob that carries a
-            <b>Param Map</b> block. The slot binds to the parameter
-            and is remembered.
+            Learn, drag a parameter in Premiere, move a Grid control.
+            The binding sticks.<br />
+            Works with Opacity, Motion Scale / Rotation / Position,
+            Lumetri Basic and Volume.
           </div>
         </div>
         <button class="pp-input pp-open-folder" style="cursor:pointer;flex:none;">
@@ -831,9 +819,9 @@
       if (this.learnStatus) {
         this.learnStatus.textContent =
           learn === "watch"
-            ? "Waiting - drag a supported parameter in Premiere…"
+            ? "Drag a parameter in Premiere…"
             : learn === "assign"
-              ? "Parameter caught - now move a Grid Param Map control…"
+              ? "Got it. Now move a Grid control…"
               : "";
       }
       if (!this.bindingsEl) return;

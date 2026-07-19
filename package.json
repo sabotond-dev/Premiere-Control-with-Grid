@@ -14,7 +14,7 @@
   "grid_editor": {
     "componentsPath": "components/dist/components.js",
     "preferenceComponent": "premiere-preference",
-    "shortDescription": "Control Premiere Pro from Grid modules: jog the timeline with an endless knob, drop markers, set in/out points, see the playhead and selected clip on a VSN1 screen.",
+    "shortDescription": "Control Premiere Pro from Grid: jog the timeline, drop markers, set in and out points, ride Lumetri and Motion parameters, and read the playhead off a VSN1 screen.",
     "mainIcon": "premiere-logo.svg",
     "menuIcon": "premiere-menu-icon.svg"
   },

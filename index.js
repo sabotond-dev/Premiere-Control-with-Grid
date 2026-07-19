@@ -629,7 +629,7 @@ exports.loadPackage = async function (gridController, persistedData) {
     });
   }
 
-  // Timeline Navigate — the hero. Signed detent delta from the
+  // Timeline Navigate — the hero. Signed step delta from the
   // element's own 64-centered step state (endless epst, encoder est),
   // chosen at runtime so one script serves both. Off-element it
   // yields 0.
@@ -771,7 +771,7 @@ exports.loadPackage = async function (gridController, persistedData) {
   // Param Map - a knob/fader drives a numbered slot; bindings between
   // slots and Premiere effect parameters are learned by wiggle from
   // the package preferences. Default is the relative endless-knob form
-  // (signed detent delta x step, Live mode); the component can switch
+  // (signed step delta x step size, Live mode); the component can switch
   // to absolute fader mode, Clean-undo, or the button-event reset.
   createAction({
     short: "xpppm",

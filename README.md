@@ -1,190 +1,123 @@
-# package-premiere-pro
+# Grid Premiere Pro package
 
-Control Adobe Premiere Pro from Grid modules. Jog the timeline with an
-endless knob, drop and jump between markers, set in/out points, ride
-effect parameters (Lumetri, Motion, Opacity, Volume) with learned knob
-bindings — and see the playhead position plus the selected clip on a
-VSN1 module screen. Everything runs through Premiere's native UXP API,
-with no keyboard shortcuts or key emulation.
+Control Adobe Premiere Pro from Grid. Jog the timeline from an endless
+knob, drop markers, set in and out points, ride Lumetri and Motion
+parameters from your controls, and read the playhead off a VSN1 screen.
+Everything that can run through Premiere's own API does. No keyboard
+emulation, no window juggling.
 
-Built in the shape of the official Grid packages (Photoshop,
-Lightroom Classic): an editor-side Node package that registers the
-action blocks, and a companion **UXP plugin** inside Premiere
-(requires Premiere Pro 25.6 or newer).
+The package has two halves, in the shape of the official Photoshop and
+Lightroom packages: a package inside the Grid Editor, and a companion
+UXP plugin inside Premiere. Requires Premiere Pro 25.6 or newer.
 
-## Architecture
+## How it connects
 
 ```
-Grid module ──gps()──▶ Grid Editor ──ws://127.0.0.1:3543──▶ Premiere UXP plugin ──ppro API──▶ active sequence
-             (serial)   (this package,                       (premiere-plugin/)
-                         index.js: WebSocket server)
-
-VSN1 screen ◀──Lua──── Grid Editor ◀──same WebSocket──────── playhead + selected clip
-             (pptc/ppcn/ppct globals   (adaptive polling, instant
-              + Premiere Display block) after each jog)
+Grid module ──gps()──▶ Grid Editor ──ws://127.0.0.1:3543──▶ Premiere plugin ──▶ active sequence
+VSN1 screen ◀──Lua──── Grid Editor ◀──────────────────────── playhead, clip, parameter values
 ```
 
-- **index.js** — runs in the editor's package-manager process.
-  Registers the actions, receives their
-  `gps("package-premiere-pro", …)` calls, and forwards them as JSON
-  commands to the plugin over a local WebSocket (`ws` package, same
-  pattern as package-photoshop). The editor is the **server**; the
-  plugin connects to it.
-- **components/dist/components.js** — the action + preference UIs,
-  plain custom elements (no build step).
-- **premiere-plugin/** — the UXP plugin. Vanilla JS, no build step;
-  `manifest.json` + `index.html` + `main.js`. Ships as a `.ccx`
-  installer built by `build-ccx.js`.
+The editor package is the WebSocket server; the plugin connects to it,
+runs commands through the Premiere API, and reports the playhead, the
+selected clip, and mapped parameter values back for the module screens.
+The connection is local only.
 
 ## Action blocks
 
-| Block             | Best on      | What it does                                                                                     |
-| ----------------- | ------------ | ------------------------------------------------------------------------------------------------ |
-| Timeline Navigate | endless knob | Jog the playhead N frames per detent                                                             |
-| Timeline Zoom     | endless knob | Zoom the timeline in/out per detent                                                              |
-| Marker            | button       | Add marker, or jump to next / previous                                                           |
-| In / Out Point    | button       | Set in / out at playhead, or clear                                                               |
-| Playhead Edit     | button       | Select all under playhead (API), cut all under playhead, trim before/after                       |
-| Clip              | button       | Enable/disable + delete selection (API), speed/duration, audio gain, group, ungroup, copy, paste |
-| Project           | button       | Save (API), undo, redo, export, render in-out                                                    |
-| Tool              | button       | Selection / Razor tool                                                                           |
-| View              | button       | Snap toggle, Effect Controls panel                                                               |
-| Modifier Hold     | button       | Hold Alt / Shift / Ctrl while the button is held                                                 |
-| Param Map         | knob / fader | Drive a learned effect parameter (see Parameter mapping below)                                   |
-| Premiere Display  | VSN1 screen  | Playhead + selected clip + last-touched parameter status screen                                  |
+| Block             | Best on      | What it does                                                            |
+| ----------------- | ------------ | ----------------------------------------------------------------------- |
+| Timeline Navigate | endless knob | Jog the playhead, N frames per step                                     |
+| Timeline Zoom     | endless knob | Zoom the timeline in and out                                            |
+| Marker            | button       | Add a marker, or jump to the next or previous one                       |
+| In / Out Point    | button       | Set in or out at the playhead, or clear both                            |
+| Playhead Edit     | button       | Select, cut, or trim everything under the playhead                      |
+| Clip              | button       | Enable, disable, delete, group, copy and paste the selection            |
+| Project           | button       | Save, undo, redo, export, render                                        |
+| Tool              | button       | Switch between Selection and Razor                                      |
+| View              | button       | Snap toggle, Effect Controls panel                                      |
+| Modifier Hold     | button       | Hold Alt, Shift or Ctrl for as long as the button is down               |
+| Param Map         | knob / fader | Drive a mapped effect parameter                                         |
+| Premiere Display  | VSN1 screen  | Clip, channel, last touched parameter and playhead on the module screen |
 
-### Native vs keyboard
+## Native or keyboard
 
-Premiere's UXP API is **read-heavy and edit-light**: it has no
-command/menu dispatch of any kind, so anything that is a menu item, a
-tool, or a UI toggle simply cannot be driven natively. Everything the
-API does expose is implemented natively here — those entries run
-through the plugin, are undoable, and work regardless of which app has
-focus:
+Premiere's UXP API has no menu or command dispatch, so every entry is
+one of two kinds. Native entries run through the plugin: they are
+undoable, frame-accurate, and work no matter which app has focus. That
+covers timeline navigation, markers, in and out points, selection and
+trims at the playhead, clip enable and delete, save, export, parameter
+mapping, and the screen readout.
 
-| Native (UXP API)                                       |
-| ------------------------------------------------------ |
-| Timeline Navigate, Marker add/next/prev, In/Out points |
-| Select all under playhead, Trim before / Trim after    |
-| Clip enable/disable, Delete selection                  |
-| Project save, Export (queue to Media Encoder)          |
-| Param Map (effect parameter rides + learn-by-wiggle)   |
-| Premiere Display readout (playhead + selected clip)    |
+The rest are the module typing Premiere's default shortcut: undo, redo,
+render, cut at the playhead, speed, gain, grouping, copy, paste, tools,
+snap, panels, and Modifier Hold. Premiere must be the focused app, and
+remapped shortcuts will not match.
 
-**Timeline Zoom** takes a third route: Premiere has no zoom API and
-zoom keyboard shortcuts are keyboard-layout-dependent, so the package
-synthesizes the native **zoom-scroll gesture at the OS level** — one
-wheel event per knob burst with a multiplied delta. On Windows a
-persistent SendInput helper emits Ctrl+wheel; on macOS a persistent
-JXA helper posts a CGEvent scroll carrying the Option modifier flag
-(grant the Grid Editor **Accessibility** permission in System
-Settings, or events are silently dropped). Hover the mouse over the
-timeline while turning — it lands wherever the cursor is, no panel
-focus needed.
+Timeline Zoom takes a third route. Premiere has no zoom API and its
+zoom shortcuts depend on keyboard layout, so the package synthesizes
+the native gesture at the OS level: Ctrl+scroll on Windows,
+Option+scroll on macOS. Hover the timeline while you turn and the zoom
+lands under the cursor, exactly like scrolling yourself. On macOS,
+grant the Grid Editor Accessibility permission first.
 
-The rest have **no API at all** and remain USB keystrokes sent by the
-module (Premiere must be the focused app, and remapped shortcuts won't
-match): Undo, Redo, Render, Cut under playhead, Speed/Duration, Audio
-Gain, Group, Ungroup, Copy, Paste, Selection/Razor tool, Snap toggle,
-Effect Controls panel, and Modifier Hold.
-
-One further caveat: **Trim** does not ripple (the API has no ripple
-edit), so it leaves a gap where Premiere's Q/W would close it.
+Two caveats worth knowing: trims do not ripple (the API has no ripple
+edit), and the clip readout follows the selected clip, since Adobe
+exposes no hover information to plugins.
 
 ## Parameter mapping
 
-Grid knobs and faders can drive effect parameters on the selected clip
-through eight mapping **slots**. A slot is paired with a parameter by
-**learn-by-wiggle**:
+Eight slots pair Grid controls with effect parameters on the selected
+clip.
 
-1. Click **Learn binding** in the package preferences.
-2. Drag any supported parameter in Premiere's UI.
-3. Move the Grid control carrying a **Param Map** block — that slot
-   now drives the parameter, and the binding is remembered.
+To map one:
 
-**Supported parameters** (the UXP API exposes no min/max, so ranges
-are hardcoded per parameter): Opacity, Motion Scale and Rotation, the
-Lumetri Basic sliders (Temperature, Tint, Saturation, Exposure,
-Contrast, Highlights, Shadows, Whites, Blacks) and audio Volume.
+1. Press a Param Map block set to **Learn**, or click **Learn binding**
+   in the package preferences.
+2. Drag the parameter in Premiere. A small nudge is enough.
+3. Move the Grid control that should own it.
 
-**Control forms.** An **endless knob** works relatively: each detent
-nudges the current value by the block's _Step / click_ (down to 0.01
-for fine rides); the running value seeds from the parameter itself and
-re-syncs after 2 s of quiet, so mouse edits and undo are respected. A
-**fader** works absolutely: its physical position maps onto the
-parameter's full range.
+The binding lands in that control's slot and is remembered. Supported
+parameters: Opacity, Motion Scale, Rotation and Position (X and Y bind
+separately), the Lumetri Basic sliders, and audio Volume. Ranges are
+fixed per parameter, since the API does not expose them.
 
-**Write modes.** The API has no transient write path — every commit
-lands one undo entry (same for every control surface out there). So
-each block chooses: **Live picture** commits ~10×/s while you turn for
-instant feedback at the cost of undo noise, or **Clean undo** streams
-the moving value only to the module screen and commits a **single**
-undo entry half a second after you stop. Either way the parameter name
-and value appear on the Premiere Display panel as you turn.
+An **endless knob** works in steps: each move nudges the value by the
+block's step size, seeded from wherever the parameter currently sits.
+A **fader** maps its physical position onto the parameter's full range.
 
-A third block form, **Reset to default**, goes on the knob's press
-(Button event) and snaps the parameter back to its default value.
+Two write modes, because the API files an undo entry for every commit:
 
-## Install (user)
+- **Live picture** commits about ten times a second while you turn.
+  Instant feedback, noisy undo history.
+- **Clean undo** shows the moving value on the module screen and
+  commits once, half a second after you stop.
+
+Either way the parameter's name and value appear on the Premiere
+Display as you turn. A block set to **Reset** on the knob's press snaps
+the parameter back to its default.
+
+## Install
 
 1. Install this package in the Grid Editor's package manager.
-2. In the package's preference panel, click **Open plugin folder** and
-   double-click `c8e52a9b_PPRO.ccx` — Creative Cloud installs the Grid
+2. In the package preferences, click **Open plugin folder** and
+   double-click `c8e52a9b_PPRO.ccx`. Creative Cloud installs the Grid
    Control plugin into Premiere.
 3. In Premiere, open the **Grid Control** panel and keep it open.
-4. Optional: on a VSN1, add the **Premiere Display** block to the
-   screen element's **Draw** event to see the playhead timecode, the
-   selected clip's name and its channel.
+4. On a VSN1, add the **Premiere Display** block to the screen
+   element's **Draw** event.
 
-## Playhead + clip readout (VSN1 screen)
+## Screen readout
 
-The plugin polls the playhead and the timeline selection (adaptively:
-once a second while static, 250 ms while moving, instantly after each
-jog) and reports changes over the socket. The package converts ticks
-to `hh:mm:ss:ff` and keeps three module Lua globals fresh with tiny
-immediate scripts:
+The plugin watches the playhead and the timeline selection and reports
+changes over the socket. The package keeps five module Lua globals
+fresh:
 
-- `pptc` — playhead timecode (non-drop-frame)
-- `ppcn` — selected clip's filename (fitted for the module font,
-  21-char ellipsis truncation, accents mapped to base letters)
-- `ppct` — selected clip's channel ("Video 1", "Audio 2"...)
-- `ppmn` / `ppmv` — last-touched mapped parameter's name and value
+- `pptc` playhead timecode, `hh:mm:ss:ff`, non-drop-frame
+- `ppcn` selected clip's name
+- `ppct` selected clip's channel, "Video 1", "Audio 2"
+- `ppmn` / `ppmv` last touched mapped parameter and its value
 
-The **Premiere Display** block draws them from INSIDE the screen's
-draw event — anything painted from outside is overwritten by the
-profile's own draw loop within one draw trigger (~25 ms). The block
-repaints only when a value changes.
-
-Knob feel is protected on both sides: the plugin's polls pause for
-800 ms around jog activity, and the editor holds screen updates while
-jog events stream (each update repaints a full frame on the very
-module whose encoder is being turned). The screen catches up the
-moment the twist stops.
-
-Note: clip info follows the **selected** clip (click it in the
-timeline) — Adobe exposes no mouse-hover API to plugins.
-
-## Development
-
-- `npm i` then `npm run build` (builds the `.ccx`).
-- Add the repo root as a local package in the Grid Editor's package
-  manager (`+ Add external package`).
-- For plugin iteration, load `premiere-plugin/` unpacked with the
-  Adobe UXP Developer Tool instead of reinstalling the ccx.
-- Editor-side changes: **Force Restart** in the package manager.
-  Component changes: restart the editor frontend.
-- **Bump `premiere-plugin/manifest.json`'s `version` on every `.ccx`
-  rebuild that users must install** — Creative Cloud can silently keep
-  the installed copy when the manifest version is unchanged. The panel
-  status line shows the running build (`PLUGIN_VERSION`) to verify.
-- `GRID_PP_BRIDGE_PORT` overrides the WebSocket port (used by tests so
-  they can run beside a live editor).
-
-## Release
-
-Pushing to `main` triggers `.github/workflows/main.yml` (same pipeline
-as the official packages): it creates a GitHub release named after
-`package.json`'s `version` and attaches `package-archive.zip` per OS,
-built by `build.js` (runtime files + `node_modules` + components +
-the `.ccx`). The Grid Editor detects newer releases and offers the
-update. Bump `version` before pushing a release-worthy main.
+The Premiere Display block draws them from inside the screen's Draw
+event and repaints only when a value changes. Use the globals directly
+for your own layouts. Updates hold while a jog is streaming so the
+knob stays tight, and catch up the moment you stop.

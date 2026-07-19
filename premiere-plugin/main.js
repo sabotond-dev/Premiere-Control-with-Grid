@@ -988,7 +988,7 @@ function pushValue(slot, binding, state, value, clean) {
 
 // Absolute mode (faders): knob position 0..127 maps onto the range.
 // 7-bit resolution - fine for a fader whose physical position should
-// BE the value, too coarse for detented endless knobs (use deltas).
+// BE the value, too coarse for endless knobs (use deltas).
 function queueParamValue(slot, value, clean) {
   if (!isFinite(slot) || !isFinite(value)) return;
   const binding = pmapBindings[String(slot)];
@@ -998,7 +998,7 @@ function queueParamValue(slot, value, clean) {
   pushValue(slot, binding, slotState(slot), mapped, clean);
 }
 
-// Relative mode (endless knobs): each detent nudges the current value
+// Relative mode (endless knobs): each encoder step nudges the value
 // by the block's step size (already multiplied in module-side, so the
 // wire carries value units). The running value seeds from the param
 // itself and re-syncs after PMAP_STALE_MS of quiet, so Premiere-side
