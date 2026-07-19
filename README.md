@@ -1,3 +1,5 @@
+![Premiere Pro Control for Intech Studio's Grid controllers](.github/banner.png)
+
 # Grid Premiere Pro package
 
 Control Adobe Premiere Pro with Grid. Jog the timeline from an endless
