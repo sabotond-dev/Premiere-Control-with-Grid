@@ -616,7 +616,7 @@ exports.loadPackage = async function (gridController, persistedData) {
         actionId: actionId++,
         rendering: "standard",
         category: "premiere",
-        color: "#9999FF",
+        color: "#00005B",
         icon: actionIcon,
         blockIcon: actionIcon,
         selectable: true,
