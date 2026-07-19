@@ -1,6 +1,6 @@
 # package-premiere-pro
 
-Control Adobe Premiere Pro from Grid modules. Jog the timeline with an
+Control Adobe Premiere Pro with Grid modules. Jog the timeline with an
 endless knob, drop and jump between markers, set in/out points, ride
 effect parameters (Lumetri, Motion, Opacity, Volume) with learned knob
 bindings — and see the playhead position plus the selected clip on a
