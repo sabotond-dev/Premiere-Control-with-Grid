@@ -57,12 +57,52 @@ let lastSendAt = 0;
 let lastJogAt = 0;
 let sentAny = false;
 
+// Parameter-mapping state. Bindings live HERE (persisted with the
+// package) and are pushed to the plugin on connect and on change; the
+// plugin only resolves and writes. Learn is a two-step handshake:
+// "watch" = the plugin is polling for the wiggled Premiere param,
+// "assign" = param found, waiting for the next Grid control to move.
+let pmapBindings = {}; // slot(string) -> binding descriptor
+let learnState = undefined; // undefined | "watch" | "assign"
+let learnParam = undefined; // descriptor from the plugin while assigning
+let learnTimer = undefined;
+
+function clearLearn() {
+  if (learnTimer) {
+    clearTimeout(learnTimer);
+    learnTimer = undefined;
+  }
+  learnState = undefined;
+  learnParam = undefined;
+}
+
+function bindingSummaries() {
+  const out = {};
+  for (const [slot, b] of Object.entries(pmapBindings)) {
+    out[slot] = `${b.compName}: ${b.paramName}`;
+  }
+  return out;
+}
+
 function notifyStatusChange() {
   preferenceMessagePort?.postMessage({
     type: "status",
     isPanelConnected,
     screenReadout: screenEnabled,
+    pmapBindings: bindingSummaries(),
+    pmapLearn: learnState ?? null,
   });
+}
+
+function persistData() {
+  controller?.sendMessageToEditor({
+    type: "persist-data",
+    data: { screenReadout: screenEnabled, pmapBindings },
+  });
+}
+
+function sendBindingsToPanel() {
+  sendToPanel({ cmd: "pmap", action: "bindings", bindings: pmapBindings });
 }
 
 // hh:mm:ss:ff from Premiere ticks + ticks-per-frame. Non-drop-frame:
@@ -100,13 +140,19 @@ function clearTimecode() {
     clearTimeout(sendTimer);
     sendTimer = undefined;
   }
+  if (paramTimer) {
+    clearTimeout(paramTimer);
+    paramTimer = undefined;
+  }
   pendingTc = undefined;
   lastClipScript = undefined;
+  paramPending = undefined;
+  lastParamScript = undefined;
   if (!sentAny) return;
   sentAny = false;
   controller?.sendMessageToEditor({
     type: "execute-lua-script",
-    script: "pptc=nil ppcn=nil ppct=nil",
+    script: "pptc=nil ppcn=nil ppct=nil ppmn=nil ppmv=nil",
   });
 }
 
@@ -168,6 +214,36 @@ function sendClip(msg) {
   if (script === lastClipScript) return;
   lastClipScript = script;
   controller?.sendMessageToEditor({ type: "execute-lua-script", script });
+}
+
+// --- Mapped-parameter readout ----------------------------------------
+// The plugin reports every mapped value move (both write modes); the
+// name + formatted value go to the modules as the ppmn / ppmv globals
+// for the Premiere Display block. Trailing-edge throttled like the
+// timecode, but NOT jog-gated: seeing the value track the knob is the
+// whole point (and in clean mode the only feedback there is).
+
+let lastParamScript = undefined;
+let paramPending = undefined;
+let paramTimer = undefined;
+
+function queueParamReadout(name, text) {
+  if (!screenEnabled) return;
+  const script = `ppmn='${moduleSafeName(name)}' ppmv='${moduleSafeName(text)}'`;
+  if (script === lastParamScript) return;
+  lastParamScript = script;
+  paramPending = script;
+  if (paramTimer) return;
+  paramTimer = setTimeout(() => {
+    paramTimer = undefined;
+    if (paramPending === undefined) return;
+    sentAny = true;
+    controller?.sendMessageToEditor({
+      type: "execute-lua-script",
+      script: paramPending,
+    });
+    paramPending = undefined;
+  }, SEND_MIN_MS);
 }
 
 // Trailing-edge throttle: bursts collapse to at most one immediate-Lua
@@ -371,8 +447,10 @@ function startServer() {
     panelWs = ws;
     isPanelConnected = true;
     // Tell the plugin whether to run the readout at all: disabled
-    // means zero polls and zero reports.
+    // means zero polls and zero reports. Then hand it the persisted
+    // param bindings - the plugin side is stateless across restarts.
     sendToPanel({ cmd: "readout", enabled: screenEnabled });
+    sendBindingsToPanel();
     notifyStatusChange();
 
     ws.on("message", handlePanelMessage);
@@ -438,6 +516,35 @@ function handlePanelMessage(data) {
     }
   } else if (msg.type === "clip") {
     if (screenEnabled) sendClip(msg);
+  } else if (msg.type === "pmval") {
+    queueParamReadout(String(msg.name ?? "?"), String(msg.text ?? ""));
+  } else if (msg.type === "pmap-learn") {
+    // The plugin caught the wiggled param; now wait for a Grid control.
+    if (learnState === "watch" && msg.param) {
+      learnParam = msg.param;
+      learnState = "assign";
+      if (learnTimer) clearTimeout(learnTimer);
+      learnTimer = setTimeout(() => {
+        clearLearn();
+        notifyStatusChange();
+      }, 30000);
+      controller?.sendMessageToEditor({
+        type: "show-message",
+        message:
+          `Learn: found ${msg.param.compName} / ${msg.param.paramName} - ` +
+          `now move the Grid control that should drive it`,
+        messageType: "success",
+      });
+      notifyStatusChange();
+    }
+  } else if (msg.type === "pmap-learn-fail") {
+    clearLearn();
+    controller?.sendMessageToEditor({
+      type: "show-message",
+      message: `Learn: ${msg.message ?? "failed"}`,
+      messageType: "fail",
+    });
+    notifyStatusChange();
   } else if (msg.type === "probe") {
     // Parameter-mapping spike: dump the component/param tree where
     // the developer can read it.
@@ -457,6 +564,11 @@ exports.loadPackage = async function (gridController, persistedData) {
   packageShutDown = false;
   controller = gridController;
   screenEnabled = persistedData?.screenReadout !== false;
+  pmapBindings =
+    persistedData?.pmapBindings &&
+    typeof persistedData.pmapBindings === "object"
+      ? persistedData.pmapBindings
+      : {};
 
   const actionIcon = fs.readFileSync(
     path.resolve(__dirname, "premiere-action-icon.svg"),
@@ -520,28 +632,34 @@ exports.loadPackage = async function (gridController, persistedData) {
   });
 
   // Premiere Display - goes INSIDE the screen element's draw event so
-  // the profile's own draw loop cannot overwrite it. Three outlined
-  // panels: clip name, channel, playhead timecode (yellow). Values
-  // come from the pptc / ppcn / ppct globals. Repaints only when the
-  // shown text changes (self.pptl remembers the last drawn key), swaps
-  // its own frame, and guards on self.ldft so it is inert off-screen.
+  // the profile's own draw loop cannot overwrite it. Four outlined
+  // panels: clip name, channel, last-touched mapped parameter, and the
+  // playhead timecode (yellow). Values come from the pptc / ppcn /
+  // ppct / ppmn / ppmv globals. Repaints only when the shown text
+  // changes (self.pptl remembers the last drawn key), swaps its own
+  // frame, and guards on self.ldft so it is inert off-screen.
   createAction({
     short: "xpptc",
     displayName: "Premiere Display",
     defaultLua:
       "local t=pptc or '--:--:--:--' local n=ppcn or '-' " +
-      "local c=ppct or '-' local k=t..n..c " +
+      "local c=ppct or '-' local pn=ppmn or '-' local pv=ppmv or '-' " +
+      "local k=t..n..c..pn..pv " +
       "if self.ldft and k~=self.pptl then self.pptl=k " +
       "self:ldaf(0,0,319,239,{0,0,0}) " +
-      "self:ldrr(2,2,317,76,6,{255,255,255}) " +
+      "self:ldrr(2,2,317,56,6,{255,255,255}) " +
       "self:ldft('Clip name',10,8,8,{255,255,255}) " +
-      "self:ldft(n,10,38,16,{255,255,255}) " +
-      "self:ldrr(2,82,317,156,6,{255,255,255}) " +
-      "self:ldft('Channel',10,88,8,{255,255,255}) " +
-      "self:ldft(c,10,114,24,{255,255,255}) " +
-      "self:ldrr(2,162,317,236,6,{255,255,255}) " +
-      "self:ldft('Playhead Position',10,168,8,{255,255,255}) " +
-      "self:ldft(t,10,194,24,{215,255,60}) " +
+      "self:ldft(n,10,26,16,{255,255,255}) " +
+      "self:ldrr(2,62,317,116,6,{255,255,255}) " +
+      "self:ldft('Channel',10,68,8,{255,255,255}) " +
+      "self:ldft(c,10,86,16,{255,255,255}) " +
+      "self:ldrr(2,122,317,176,6,{255,255,255}) " +
+      "self:ldft('Parameter',10,128,8,{255,255,255}) " +
+      "self:ldft(pn,10,146,16,{255,255,255}) " +
+      "self:ldft(pv,200,146,16,{215,255,60}) " +
+      "self:ldrr(2,182,317,236,6,{255,255,255}) " +
+      "self:ldft('Playhead Position',10,188,8,{255,255,255}) " +
+      "self:ldft(t,10,206,24,{215,255,60}) " +
       "self:ldsw() end",
     actionComponent: "premiere-timecode-action",
   });
@@ -616,13 +734,16 @@ exports.loadPackage = async function (gridController, persistedData) {
     actionComponent: "premiere-zoom-action",
   });
 
-  // Parameter Map SPIKE (feature/param-mapping branch): a fader/knob
-  // streams its value to a slot; slot 1 is hardwired to Lumetri
-  // Exposure on the selected clip while we research the real feature.
+  // Param Map - a fader/knob streams its value to a numbered slot;
+  // bindings between slots and Premiere effect parameters are learned
+  // by wiggle from the package preferences. The default is Live write
+  // mode (trailing 0); the component can switch to Clean-undo (1) or
+  // the button-event reset form.
   createAction({
     short: "xpppm",
-    displayName: "Param Map (spike)",
-    defaultLua: 'gps("package-premiere-pro", "pmap", 1, self:get_auto_value())',
+    displayName: "Param Map",
+    defaultLua:
+      'gps("package-premiere-pro", "pmap", 1, self:get_auto_value(), 0)',
     actionComponent: "premiere-pmap-action",
   });
 
@@ -638,6 +759,7 @@ exports.unloadPackage = async function () {
       actionId: --actionId,
     });
   }
+  clearLearn();
   clearTimecode();
   stopServer();
   stopZoomHelper();
@@ -656,12 +778,31 @@ exports.addMessagePort = async function (port, senderId) {
         openExplorer(__dirname);
       } else if (e.data?.type === "pmap-probe") {
         sendToPanel({ cmd: "pmap", action: "probe" });
+      } else if (e.data?.type === "pmap-learn") {
+        if (!isPanelConnected) {
+          controller?.sendMessageToEditor({
+            type: "show-message",
+            message: "Learn needs the Premiere plugin connected",
+            messageType: "fail",
+          });
+        } else {
+          clearLearn();
+          learnState = "watch";
+          sendToPanel({ cmd: "pmap", action: "learn" });
+          notifyStatusChange();
+        }
+      } else if (e.data?.type === "pmap-learn-cancel") {
+        clearLearn();
+        sendToPanel({ cmd: "pmap", action: "learn-cancel" });
+        notifyStatusChange();
+      } else if (e.data?.type === "pmap-clear") {
+        delete pmapBindings[String(e.data.slot)];
+        persistData();
+        sendBindingsToPanel();
+        notifyStatusChange();
       } else if (e.data?.type === "set-screen-readout") {
         screenEnabled = !!e.data.enabled;
-        controller?.sendMessageToEditor({
-          type: "persist-data",
-          data: { screenReadout: screenEnabled },
-        });
+        persistData();
         sendToPanel({ cmd: "readout", enabled: screenEnabled });
         if (!screenEnabled) {
           clearTimecode();
@@ -746,11 +887,38 @@ exports.sendMessage = async function (args) {
   }
 
   if (group === "pmap") {
-    // args: ["pmap", slot, value] - parameter mapping spike. Values
-    // stream at fader rate; the plugin coalesces to ~10 writes/s.
+    const slot = Number(args[1]) || 1;
+
+    // args: ["pmap", slot, "reset"] - the press-to-reset button form.
+    if (args[2] === "reset") {
+      sendToPanel({ cmd: "pmap", action: "reset", slot });
+      return;
+    }
+
+    // args: ["pmap", slot, value, mode] with mode 0=live 1=clean;
+    // legacy spike scripts omit mode and degrade to live.
     const value = Number(args[2]);
     if (!isFinite(value)) return;
-    sendToPanel({ cmd: "pmap", slot: Number(args[1]) || 1, value });
+
+    // Learn step 2: the first Grid control that moves while a learned
+    // param is waiting becomes its source. The triggering value is
+    // consumed (binding a knob should not also slam the param).
+    if (learnState === "assign" && learnParam) {
+      pmapBindings[String(slot)] = learnParam;
+      const bound = learnParam;
+      clearLearn();
+      persistData();
+      sendBindingsToPanel();
+      controller?.sendMessageToEditor({
+        type: "show-message",
+        message: `Slot ${slot} mapped to ${bound.compName} / ${bound.paramName}`,
+        messageType: "success",
+      });
+      notifyStatusChange();
+      return;
+    }
+
+    sendToPanel({ cmd: "pmap", slot, value, clean: Number(args[3]) === 1 });
     return;
   }
 

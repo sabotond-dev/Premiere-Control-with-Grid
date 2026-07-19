@@ -500,41 +500,80 @@
     }
   }
 
-  // --- Param Map (spike) -----------------------------------------------
-  // Research build: streams this element's value to a mapping slot.
-  // Slot 1 is hardwired to Lumetri Exposure on the plugin side.
+  // --- Param Map -------------------------------------------------------
+  // Streams a fader/knob value to a numbered mapping slot, or resets
+  // the slot's parameter to its default from a button press. Which
+  // Premiere parameter a slot drives is learned by wiggle from the
+  // package preferences.
   class PmapAction extends PremiereActionElement {
     render() {
       this.slot = 1;
+      this.mode = "live";
       const root = document.createElement("div");
       root.className = "pp-root";
       root.innerHTML = `
         <label class="pp-field">
           <span>Slot</span>
-          <input class="pp-input pp-slot" type="number" min="1" max="8" value="1" />
+          <select class="pp-input pp-slot">
+            ${[1, 2, 3, 4, 5, 6, 7, 8]
+              .map((n) => `<option value="${n}">${n}</option>`)
+              .join("")}
+          </select>
+        </label>
+        <label class="pp-field">
+          <span>Do</span>
+          <select class="pp-input pp-mode">
+            <option value="live">Send value - Live picture</option>
+            <option value="clean">Send value - Clean undo</option>
+            <option value="reset">Reset to default (button)</option>
+          </select>
         </label>
         <div class="pp-note">
-          SPIKE build. Put this on a fader or knob - its value streams
-          to the slot. Slot 1 currently drives <b>Lumetri Exposure</b>
-          on the selected clip (add the Lumetri Color effect first).
-          Other slots do nothing yet.
+          Map a slot to a Premiere effect parameter with <b>Learn</b> in
+          the package preferences, then put this on a fader or knob.
+          <b>Live picture</b> updates Premiere ~10×/s while you turn -
+          instant feedback, but every step lands in the undo history.
+          <b>Clean undo</b> shows the moving value only on the module
+          screen and commits a single undo entry half a second after
+          you stop. <b>Reset</b> goes on the knob's press (Button
+          event) and snaps the parameter back to its default.
         </div>`;
       this.appendChild(root);
-      this.slotInput = root.querySelector(".pp-slot");
-      this.slotInput.addEventListener("input", () => {
-        this.slot = Math.max(1, Math.min(8, Number(this.slotInput.value) || 1));
+      this.slotSel = root.querySelector(".pp-slot");
+      this.modeSel = root.querySelector(".pp-mode");
+      const onChange = () => {
+        this.slot = Math.max(1, Math.min(8, Number(this.slotSel.value) || 1));
+        this.mode = this.modeSel.value;
         this.commit();
-      });
+      };
+      this.slotSel.addEventListener("change", onChange);
+      this.modeSel.addEventListener("change", onChange);
     }
 
     fromScript(script) {
-      const m = script.match(/"pmap",\s*(\d+)/);
-      this.slot = m ? Number(m[1]) : 1;
-      if (this.slotInput) this.slotInput.value = String(this.slot);
+      let m = script.match(/"pmap",\s*(\d+),\s*"reset"/);
+      if (m) {
+        this.slot = Number(m[1]);
+        this.mode = "reset";
+      } else {
+        m = script.match(/"pmap",\s*(\d+)(?:.*?,\s*(\d)\s*\))?/);
+        this.slot = m ? Number(m[1]) : 1;
+        this.mode = m && m[2] === "1" ? "clean" : "live";
+      }
+      if (this.slotSel) this.slotSel.value = String(this.slot);
+      if (this.modeSel) this.modeSel.value = this.mode;
     }
 
     toScript() {
-      return `gps("${PKG}", "pmap", ${this.slot}, self:get_auto_value())`;
+      if (this.mode === "reset") {
+        return (
+          `if self:bst()>0 then if self.pprs~=1 then self.pprs=1 ` +
+          `gps("${PKG}", "pmap", ${this.slot}, "reset") end ` +
+          `else self.pprs=0 end`
+        );
+      }
+      const clean = this.mode === "clean" ? 1 : 0;
+      return `gps("${PKG}", "pmap", ${this.slot}, self:get_auto_value(), ${clean})`;
     }
   }
 
@@ -549,15 +588,20 @@
       root.innerHTML = `
         <div class="pp-note">
           Draws the Premiere status screen on a VSN1: clip name and
-          channel of the clip selected in the timeline, plus the
-          playhead position as <span class="pp-code">hh:mm:ss:ff</span>,
-          each in its own outlined panel. Add this block to the screen
+          channel of the clip selected in the timeline, the last mapped
+          parameter you touched with its value, plus the playhead
+          position as <span class="pp-code">hh:mm:ss:ff</span>, each in
+          its own outlined panel. Add this block to the screen
           element's <b>Draw</b> event. It repaints only when something
           changes and shows <span class="pp-code">--:--:--:--</span>
           while Premiere or the panel is closed. Raw values are the
           module Lua globals <span class="pp-code">pptc</span>,
-          <span class="pp-code">ppcn</span> and
-          <span class="pp-code">ppct</span> for custom layouts.
+          <span class="pp-code">ppcn</span>,
+          <span class="pp-code">ppct</span>,
+          <span class="pp-code">ppmn</span> and
+          <span class="pp-code">ppmv</span> for custom layouts.
+          (Blocks placed before the parameter panel existed keep their
+          old three-panel layout - remove and re-add to upgrade.)
         </div>`;
       this.appendChild(root);
     }
@@ -571,18 +615,23 @@
       return (
         this._script ??
         "local t=pptc or '--:--:--:--' local n=ppcn or '-' " +
-          "local c=ppct or '-' local k=t..n..c " +
+          "local c=ppct or '-' local pn=ppmn or '-' local pv=ppmv or '-' " +
+          "local k=t..n..c..pn..pv " +
           "if self.ldft and k~=self.pptl then self.pptl=k " +
           "self:ldaf(0,0,319,239,{0,0,0}) " +
-          "self:ldrr(2,2,317,76,6,{255,255,255}) " +
+          "self:ldrr(2,2,317,56,6,{255,255,255}) " +
           "self:ldft('Clip name',10,8,8,{255,255,255}) " +
-          "self:ldft(n,10,38,16,{255,255,255}) " +
-          "self:ldrr(2,82,317,156,6,{255,255,255}) " +
-          "self:ldft('Channel',10,88,8,{255,255,255}) " +
-          "self:ldft(c,10,114,24,{255,255,255}) " +
-          "self:ldrr(2,162,317,236,6,{255,255,255}) " +
-          "self:ldft('Playhead Position',10,168,8,{255,255,255}) " +
-          "self:ldft(t,10,194,24,{215,255,60}) " +
+          "self:ldft(n,10,26,16,{255,255,255}) " +
+          "self:ldrr(2,62,317,116,6,{255,255,255}) " +
+          "self:ldft('Channel',10,68,8,{255,255,255}) " +
+          "self:ldft(c,10,86,16,{255,255,255}) " +
+          "self:ldrr(2,122,317,176,6,{255,255,255}) " +
+          "self:ldft('Parameter',10,128,8,{255,255,255}) " +
+          "self:ldft(pn,10,146,16,{255,255,255}) " +
+          "self:ldft(pv,200,146,16,{215,255,60}) " +
+          "self:ldrr(2,182,317,236,6,{255,255,255}) " +
+          "self:ldft('Playhead Position',10,188,8,{255,255,255}) " +
+          "self:ldft(t,10,206,24,{215,255,60}) " +
           "self:ldsw() end"
       );
     }
@@ -624,20 +673,46 @@
           block to the screen element's Draw event; this toggle controls
           whether the readout values are streamed to the modules at all.
         </div>
+        <div style="border-top:1px solid rgba(255,255,255,0.14);padding-top:8px;">
+          <div class="pp-field" style="justify-content:space-between;">
+            <span style="min-width:0;"><b>Parameter mapping</b></span>
+            <button class="pp-input pp-learn" style="cursor:pointer;flex:none;">
+              Learn binding
+            </button>
+          </div>
+          <div class="pp-note pp-learn-status" style="margin-top:4px;"></div>
+          <div class="pp-bindings" style="margin-top:4px;"></div>
+          <div class="pp-note" style="margin-top:6px;">
+            Click <b>Learn binding</b>, drag any supported parameter in
+            Premiere (Opacity, Motion Scale/Rotation, the Lumetri Basic
+            sliders, Volume), then move the Grid fader or knob that
+            carries a <b>Param Map</b> block. The slot binds to the
+            parameter and is remembered.
+          </div>
+        </div>
         <button class="pp-input pp-open-folder" style="cursor:pointer;flex:none;">
           Open plugin folder (.ccx installer)
         </button>
         <button class="pp-input pp-probe" style="cursor:pointer;flex:none;">
-          Probe clip parameters (spike)
+          Probe clip parameters (diagnostic)
         </button>`;
       this.appendChild(root);
       this.dot = root.querySelector(".pp-dot");
       this.state = root.querySelector(".pp-state");
       this.screenToggle = root.querySelector(".pp-screen");
+      this.learnBtn = root.querySelector(".pp-learn");
+      this.learnStatus = root.querySelector(".pp-learn-status");
+      this.bindingsEl = root.querySelector(".pp-bindings");
+      this.learnMode = null;
       this.screenToggle.addEventListener("change", () => {
         this.port?.postMessage({
           type: "set-screen-readout",
           enabled: this.screenToggle.checked,
+        });
+      });
+      this.learnBtn.addEventListener("click", () => {
+        this.port?.postMessage({
+          type: this.learnMode ? "pmap-learn-cancel" : "pmap-learn",
         });
       });
       root.querySelector(".pp-open-folder").addEventListener("click", () => {
@@ -655,12 +730,58 @@
             if (this.screenToggle) {
               this.screenToggle.checked = e.data.screenReadout !== false;
             }
+            this.setPmapState(e.data.pmapLearn, e.data.pmapBindings || {});
           }
         };
         this.port.start?.();
         this.port.postMessage({ type: "request-status" });
       } catch (e) {
         /* editor without the package messaging bridge: leave as-is */
+      }
+    }
+
+    setPmapState(learn, bindings) {
+      this.learnMode = learn || null;
+      if (this.learnBtn) {
+        this.learnBtn.textContent = learn ? "Cancel learn" : "Learn binding";
+      }
+      if (this.learnStatus) {
+        this.learnStatus.textContent =
+          learn === "watch"
+            ? "Waiting - drag a supported parameter in Premiere…"
+            : learn === "assign"
+              ? "Parameter caught - now move a Grid Param Map control…"
+              : "";
+      }
+      if (!this.bindingsEl) return;
+      this.bindingsEl.textContent = "";
+      const slots = Object.keys(bindings).sort((a, b) => Number(a) - Number(b));
+      if (slots.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "pp-note";
+        empty.textContent = "No slots mapped yet.";
+        this.bindingsEl.appendChild(empty);
+        return;
+      }
+      for (const slot of slots) {
+        const row = document.createElement("div");
+        row.className = "pp-field";
+        row.style.justifyContent = "space-between";
+        const label = document.createElement("span");
+        label.style.minWidth = "0";
+        label.textContent = `Slot ${slot} - ${bindings[slot]}`;
+        const clear = document.createElement("button");
+        clear.className = "pp-input";
+        clear.style.cursor = "pointer";
+        clear.style.flex = "none";
+        clear.textContent = "✕";
+        clear.title = "Clear this binding";
+        clear.addEventListener("click", () => {
+          this.port?.postMessage({ type: "pmap-clear", slot });
+        });
+        row.appendChild(label);
+        row.appendChild(clear);
+        this.bindingsEl.appendChild(row);
       }
     }
 

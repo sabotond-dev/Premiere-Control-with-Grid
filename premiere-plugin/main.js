@@ -9,7 +9,7 @@
 
 const ppro = require("premierepro");
 
-const PLUGIN_VERSION = "1.4.0-spike";
+const PLUGIN_VERSION = "1.4.0-beta.1";
 const BRIDGE_URL = "ws://localhost:3543";
 const RECONNECT_MS = 2000;
 
@@ -163,12 +163,33 @@ function dispatch(command) {
   }
 
   if (command.cmd === "pmap") {
-    // Parameter-mapping SPIKE (feature/param-mapping branch).
     if (command.action === "probe") {
       runParamProbe();
       return;
     }
-    queueParamValue(Number(command.slot), Number(command.value));
+    if (command.action === "bindings") {
+      pmapBindings = command.bindings || {};
+      pmapResolveCache = {};
+      logLine(`pmap bindings: ${Object.keys(pmapBindings).length} slot(s)`);
+      return;
+    }
+    if (command.action === "learn") {
+      startLearn();
+      return;
+    }
+    if (command.action === "learn-cancel") {
+      stopLearn();
+      return;
+    }
+    if (command.action === "reset") {
+      resetParamValue(Number(command.slot));
+      return;
+    }
+    queueParamValue(
+      Number(command.slot),
+      Number(command.value),
+      !!command.clean,
+    );
     return;
   }
 }
@@ -503,19 +524,78 @@ async function runProjectOp(action) {
   }
 }
 
-// --- Parameter mapping SPIKE (feature/param-mapping branch) ----------
-// Two research questions this answers on real hardware:
-//  1. Can we enumerate a clip's effects + parameters (incl. Lumetri)?
-//     -> "probe" dumps the full component/param tree to the editor,
-//        which writes it to a JSON file.
-//  2. What does a fader-driven createSetValueAction feel like at
-//     ~10 transactions/second (undo history, playback smoothness)?
-//     -> slot 1 is hardcoded to Lumetri "Exposure" on the selected
-//        clip (or the first clip of V1), mapped 0..127 -> -5..+5.
+// --- Parameter mapping -----------------------------------------------
+// Grid knobs/faders drive effect parameters on the selected clip.
+// Bindings are learned by wiggle: the editor arms learn mode, this
+// side snapshots the supported ("blessed") parameters of the selected
+// clip and polls for the one the user drags in Premiere's UI; the
+// editor then pairs it with the next Grid control that moves, and
+// sends the full binding table back down (it also persists it).
+//
+// The UXP API exposes no parameter min/max, so ranges are hardcoded
+// per parameter. Only parameters in this table are learnable - the
+// rest have no way to map 0..127 onto a sensible span.
+//
+// Writes go through createSetValueAction inside a locked transaction.
+// There is no transient (undo-free) write path in the API, so each
+// commit lands one undo entry - hence the two write modes:
+//   live  - coalesced ~10 commits/s: the picture follows the knob,
+//           the undo stack fills up (same as Loupedeck/MX Console).
+//   clean - the value only streams to the module screen while the
+//           knob turns; ONE commit fires after 500ms of quiet.
 
-let pmapCache = { clipKey: null, param: null, paramName: "", project: null };
-let pmapPendingValue = undefined;
-let pmapTimer = undefined;
+const PMAP_LIVE_MS = 100; // live-mode coalescing (hardware-proven feel)
+const PMAP_CLEAN_QUIET_MS = 500; // clean-mode commit-after-quiet delay
+const LEARN_POLL_MS = 300;
+const LEARN_TIMEOUT_MS = 30000;
+
+// Blessed parameter set. comp matches the component matchName OR
+// displayName; name matches the param displayName. First index match
+// wins, so Lumetri's Basic section (idx 14..24) shadows the identical
+// names in Creative/HSL further down the list. Ranges are the UI
+// slider bounds (Exposure -7..+7 hardware-verified; Saturation 0..300).
+const BLESSED = [
+  {
+    comp: /^AE\.ADBE Opacity$|^Opacity$/,
+    name: /^Opacity$/,
+    min: 0,
+    max: 100,
+    def: 100,
+  },
+  {
+    comp: /^AE\.ADBE Motion$|^Motion$/,
+    name: /^Scale$/,
+    min: 0,
+    max: 200,
+    def: 100,
+  },
+  {
+    comp: /^AE\.ADBE Motion$|^Motion$/,
+    name: /^Rotation$/,
+    min: -180,
+    max: 180,
+    def: 0,
+  },
+  { comp: /Lumetri/i, name: /^Temperature$/, min: -100, max: 100, def: 0 },
+  { comp: /Lumetri/i, name: /^Tint$/, min: -100, max: 100, def: 0 },
+  { comp: /Lumetri/i, name: /^Saturation$/, min: 0, max: 300, def: 100 },
+  { comp: /Lumetri/i, name: /^Exposure$/, min: -7, max: 7, def: 0 },
+  { comp: /Lumetri/i, name: /^Contrast$/, min: -100, max: 100, def: 0 },
+  { comp: /Lumetri/i, name: /^Highlights$/, min: -100, max: 100, def: 0 },
+  { comp: /Lumetri/i, name: /^Shadows$/, min: -100, max: 100, def: 0 },
+  { comp: /Lumetri/i, name: /^Whites$/, min: -100, max: 100, def: 0 },
+  { comp: /Lumetri/i, name: /^Blacks$/, min: -100, max: 100, def: 0 },
+  // Audio volume: not yet hardware-verified - the probe ran on a video
+  // clip, so the Level units (dB assumed) are a best guess.
+  { comp: /Volume|Audio Levels/i, name: /^Level$/, min: -60, max: 6, def: 0 },
+];
+
+// slot(string) -> {compMatch, compName, paramIndex, paramName, min, max, def}
+let pmapBindings = {};
+// slot -> {clipKey, param, project} resolved param handles
+let pmapResolveCache = {};
+// slot -> {pending, timer, clean} in-flight write state
+let pmapSlotState = {};
 let pmapLastErrorAt = 0;
 
 async function selectedOrFirstClip(seq) {
@@ -596,83 +676,304 @@ async function runParamProbe() {
   }
 }
 
-async function resolvePmapTarget() {
+// Throttled error reporter: fader streams would otherwise flood the
+// editor with identical messages.
+function pmapError(e, step) {
+  const now = Date.now();
+  if (now - pmapLastErrorAt > 3000) {
+    pmapLastErrorAt = now;
+    sendError(e, step);
+  }
+}
+
+// Trim trailing zeros: 2.35, -100, 0.5, 0.
+function formatParamValue(v) {
+  return String(Math.round(v * 100) / 100);
+}
+
+async function clipKeyOf(item) {
+  return String(await item.getName()) + "|" + (await item.getTrackIndex());
+}
+
+// Scan a clip's component chain for the blessed params. Returns
+// [{comp, param, compMatch, compName, paramIndex, paramName, spec}] -
+// one entry per blessed spec at most, first index match wins.
+async function scanBlessedParams(project, item) {
+  const chain = await item.getComponentChain();
+  const refs = collectComponentRefs(project, chain);
+  const found = [];
+  const claimed = new Set();
+  for (const ref of refs) {
+    const compMatch = String(await ref.comp.getMatchName());
+    const compName = String(await ref.comp.getDisplayName());
+    for (let i = 0; i < ref.params.length; i++) {
+      const param = ref.params[i];
+      const paramName = String(param.displayName ?? "");
+      for (let s = 0; s < BLESSED.length; s++) {
+        if (claimed.has(s)) continue;
+        const spec = BLESSED[s];
+        if (!spec.comp.test(compMatch) && !spec.comp.test(compName)) continue;
+        if (!spec.name.test(paramName)) continue;
+        claimed.add(s);
+        found.push({
+          comp: ref.comp,
+          param,
+          compMatch,
+          compName,
+          paramIndex: i,
+          paramName,
+          spec,
+        });
+        break;
+      }
+    }
+  }
+  return found;
+}
+
+async function readParamValue(param) {
+  try {
+    const kf = await param.getStartValue();
+    const v = kf?.value?.value ?? kf?.value ?? null;
+    return typeof v === "number" ? v : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// --- Learn by wiggle -------------------------------------------------
+
+let learn = null; // {watch, clipKey, deadline, timer}
+
+function stopLearn() {
+  if (learn?.timer) clearTimeout(learn.timer);
+  learn = null;
+}
+
+async function buildLearnWatch() {
+  const { project, seq } = await activeSequence();
+  if (!seq) return { error: "No active sequence" };
+  const item = await selectedOrFirstClip(seq);
+  if (!item) return { error: "No clip selected" };
+  const clipKey = await clipKeyOf(item);
+  const entries = await scanBlessedParams(project, item);
+  if (entries.length === 0) {
+    return {
+      error:
+        "No supported parameters on this clip - supported: Opacity, " +
+        "Motion Scale/Rotation, Lumetri Basic, Volume",
+    };
+  }
+  for (const entry of entries) {
+    entry.last = await readParamValue(entry.param);
+  }
+  return { clipKey, watch: entries };
+}
+
+async function startLearn() {
+  stopLearn();
+  const built = await buildLearnWatch();
+  if (built.error) {
+    send({ type: "pmap-learn-fail", message: built.error });
+    return;
+  }
+  learn = {
+    watch: built.watch,
+    clipKey: built.clipKey,
+    deadline: Date.now() + LEARN_TIMEOUT_MS,
+  };
+  logLine(`learn armed: watching ${learn.watch.length} params`);
+  learnTick();
+}
+
+function learnTick() {
+  if (!learn) return;
+  learn.timer = setTimeout(async () => {
+    if (!learn) return;
+    if (Date.now() > learn.deadline) {
+      stopLearn();
+      send({
+        type: "pmap-learn-fail",
+        message: "Learn timed out - no parameter moved",
+      });
+      return;
+    }
+    try {
+      // Follow the selection: re-snapshot when the user clicks another
+      // clip mid-learn instead of diffing against the wrong one.
+      const { seq } = await activeSequence();
+      const item = seq ? await selectedOrFirstClip(seq) : null;
+      if (item && (await clipKeyOf(item)) !== learn.clipKey) {
+        const built = await buildLearnWatch();
+        if (!built.error && learn) {
+          learn.watch = built.watch;
+          learn.clipKey = built.clipKey;
+        }
+      } else {
+        for (const entry of learn.watch) {
+          const v = await readParamValue(entry.param);
+          if (v === null || entry.last === null) {
+            entry.last = v;
+            continue;
+          }
+          if (v !== entry.last) {
+            const d = {
+              compMatch: entry.compMatch,
+              compName: entry.compName,
+              paramIndex: entry.paramIndex,
+              paramName: entry.paramName,
+              min: entry.spec.min,
+              max: entry.spec.max,
+              def: entry.spec.def,
+            };
+            stopLearn();
+            logLine(`learn found: ${d.compName} / ${d.paramName}`);
+            send({ type: "pmap-learn", param: d });
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      // A transient read failure should not kill the learn session.
+      logLine("learn poll: " + String(e?.message ?? e).slice(0, 120));
+    }
+    learnTick();
+  }, LEARN_POLL_MS);
+}
+
+// --- Value writes ----------------------------------------------------
+
+// Resolve the bound param on the CURRENT clip. The binding pins the
+// component by matchName + param by index (learned), with a name-scan
+// fallback in case indices shift across Premiere versions.
+async function resolveSlot(slot) {
+  const binding = pmapBindings[String(slot)];
+  if (!binding) return null;
   const { project, seq } = await activeSequence();
   if (!seq) return null;
   const item = await selectedOrFirstClip(seq);
   if (!item) return null;
-  const clipKey =
-    String(await item.getName()) + "|" + (await item.getTrackIndex());
-  if (pmapCache.clipKey === clipKey && pmapCache.param) return pmapCache;
+  const clipKey = await clipKeyOf(item);
+  const cached = pmapResolveCache[slot];
+  if (cached && cached.clipKey === clipKey && cached.param) return cached;
 
   const chain = await item.getComponentChain();
   const refs = collectComponentRefs(project, chain);
+  let hit = null;
   for (const ref of refs) {
-    const matchName = String(await ref.comp.getMatchName());
-    if (!/lumetri/i.test(matchName)) continue;
-    for (const param of ref.params) {
-      if (/exposure/i.test(String(param.displayName ?? ""))) {
-        pmapCache = {
-          clipKey,
-          param,
-          paramName: String(param.displayName),
-          project,
-        };
-        logLine(`pmap bound: ${pmapCache.paramName} on ${clipKey}`);
-        return pmapCache;
-      }
+    const compMatch = String(await ref.comp.getMatchName());
+    if (compMatch !== binding.compMatch) continue;
+    const byIndex = ref.params[binding.paramIndex];
+    if (byIndex && String(byIndex.displayName ?? "") === binding.paramName) {
+      hit = byIndex;
+    } else {
+      hit = ref.params.find(
+        (p) => String(p.displayName ?? "") === binding.paramName,
+      );
     }
+    if (hit) break;
   }
-  pmapCache = { clipKey, param: null, paramName: "", project };
-  return pmapCache;
+  const resolved = { clipKey, param: hit ?? null, project };
+  pmapResolveCache[slot] = resolved;
+  if (hit) logLine(`pmap ${slot}: ${binding.paramName} on ${clipKey}`);
+  return resolved;
 }
 
-function queueParamValue(slot, value) {
-  if (slot !== 1 || !isFinite(value)) return; // spike: one hardcoded slot
-  pmapPendingValue = value;
-  if (pmapTimer) return;
-  pmapTimer = setTimeout(applyParamValue, 100);
+function slotState(slot) {
+  if (!pmapSlotState[slot]) {
+    pmapSlotState[slot] = { pending: undefined, timer: undefined };
+  }
+  return pmapSlotState[slot];
 }
 
-async function applyParamValue() {
-  pmapTimer = undefined;
-  const v = pmapPendingValue;
-  pmapPendingValue = undefined;
+function queueParamValue(slot, value, clean) {
+  if (!isFinite(slot) || !isFinite(value)) return;
+  const binding = pmapBindings[String(slot)];
+  if (!binding) {
+    pmapError(
+      `Slot ${slot} is not mapped - use Learn in the package preferences`,
+      "pmap",
+    );
+    return;
+  }
+  const span = binding.max - binding.min;
+  const mapped = Math.round((binding.min + (value / 127) * span) * 100) / 100;
+
+  // The module screen follows every move in both modes - this is what
+  // makes clean mode usable (you see the value without commits).
+  send({
+    type: "pmval",
+    slot,
+    name: binding.paramName,
+    text: formatParamValue(mapped),
+  });
+
+  const state = slotState(slot);
+  state.pending = mapped;
+  if (clean) {
+    // Debounce: every move pushes the single commit further out.
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = setTimeout(() => applySlot(slot), PMAP_CLEAN_QUIET_MS);
+  } else {
+    // Coalesce: at most one commit per window, trailing value wins.
+    if (state.timer) return;
+    state.timer = setTimeout(() => applySlot(slot), PMAP_LIVE_MS);
+  }
+}
+
+async function resetParamValue(slot) {
+  const binding = pmapBindings[String(slot)];
+  if (!binding) return;
+  const state = slotState(slot);
+  if (state.timer) {
+    clearTimeout(state.timer);
+    state.timer = undefined;
+  }
+  state.pending = binding.def;
+  send({
+    type: "pmval",
+    slot,
+    name: binding.paramName,
+    text: formatParamValue(binding.def),
+  });
+  await applySlot(slot);
+}
+
+async function applySlot(slot) {
+  const state = slotState(slot);
+  state.timer = undefined;
+  const v = state.pending;
+  state.pending = undefined;
   if (typeof v === "undefined") return;
+  const binding = pmapBindings[String(slot)];
+  if (!binding) return;
   try {
-    const target = await resolvePmapTarget();
+    const target = await resolveSlot(slot);
     if (!target || !target.param) {
-      const now = Date.now();
-      if (now - pmapLastErrorAt > 3000) {
-        pmapLastErrorAt = now;
-        sendError(
-          "No Lumetri Exposure found - add Lumetri Color to the clip first",
-          "pmap",
-        );
-      }
+      pmapError(
+        `${binding.paramName}: no matching effect on the selected clip`,
+        "pmap",
+      );
       return;
     }
-    // 0..127 -> Lumetri exposure -7..+7 (UI slider bounds), two decimals.
-    const mapped = Math.round(((v / 127) * 14 - 7) * 100) / 100;
     const { param, project } = target;
     let success = false;
     project.lockedAccess(() => {
       success = project.executeTransaction((compound) => {
-        const kf = param.createKeyframe(mapped);
+        const kf = param.createKeyframe(v);
         compound.addAction(param.createSetValueAction(kf, true));
-      }, "Grid: Exposure");
+      }, `Grid: ${binding.paramName}`);
     });
-    if (success) logLine(`exposure -> ${mapped}`);
+    if (success) logLine(`${binding.paramName} -> ${formatParamValue(v)}`);
   } catch (e) {
-    const now = Date.now();
-    if (now - pmapLastErrorAt > 3000) {
-      pmapLastErrorAt = now;
-      sendError(e, "pmap");
-    }
+    // A stale cached param handle (deleted effect) throws here; drop
+    // the cache so the next move re-resolves.
+    delete pmapResolveCache[slot];
+    pmapError(e, "pmap");
   }
   // A newer value may have arrived while this one applied.
-  if (typeof pmapPendingValue !== "undefined" && !pmapTimer) {
-    pmapTimer = setTimeout(applyParamValue, 100);
+  if (typeof state.pending !== "undefined" && !state.timer) {
+    state.timer = setTimeout(() => applySlot(slot), PMAP_LIVE_MS);
   }
 }
 
