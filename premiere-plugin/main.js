@@ -9,7 +9,7 @@
 
 const ppro = require("premierepro");
 
-const PLUGIN_VERSION = "1.4.0-beta.1";
+const PLUGIN_VERSION = "1.4.0-beta.2";
 const BRIDGE_URL = "ws://localhost:3543";
 const RECONNECT_MS = 2000;
 
@@ -183,6 +183,14 @@ function dispatch(command) {
     }
     if (command.action === "reset") {
       resetParamValue(Number(command.slot));
+      return;
+    }
+    if ("delta" in command) {
+      queueParamDelta(
+        Number(command.slot),
+        Number(command.delta),
+        !!command.clean,
+      );
       return;
     }
     queueParamValue(
@@ -546,6 +554,7 @@ async function runProjectOp(action) {
 
 const PMAP_LIVE_MS = 100; // live-mode coalescing (hardware-proven feel)
 const PMAP_CLEAN_QUIET_MS = 500; // clean-mode commit-after-quiet delay
+const PMAP_STALE_MS = 2000; // relative mode re-reads the param after this quiet
 const LEARN_POLL_MS = 300;
 const LEARN_TIMEOUT_MS = 30000;
 
@@ -580,11 +589,12 @@ const BLESSED = [
   { comp: /Lumetri/i, name: /^Tint$/, min: -100, max: 100, def: 0 },
   { comp: /Lumetri/i, name: /^Saturation$/, min: 0, max: 300, def: 100 },
   { comp: /Lumetri/i, name: /^Exposure$/, min: -7, max: 7, def: 0 },
-  { comp: /Lumetri/i, name: /^Contrast$/, min: -100, max: 100, def: 0 },
-  { comp: /Lumetri/i, name: /^Highlights$/, min: -100, max: 100, def: 0 },
-  { comp: /Lumetri/i, name: /^Shadows$/, min: -100, max: 100, def: 0 },
-  { comp: /Lumetri/i, name: /^Whites$/, min: -100, max: 100, def: 0 },
-  { comp: /Lumetri/i, name: /^Blacks$/, min: -100, max: 100, def: 0 },
+  // The five tone sliders run -150..+150 (Contrast hardware-verified).
+  { comp: /Lumetri/i, name: /^Contrast$/, min: -150, max: 150, def: 0 },
+  { comp: /Lumetri/i, name: /^Highlights$/, min: -150, max: 150, def: 0 },
+  { comp: /Lumetri/i, name: /^Shadows$/, min: -150, max: 150, def: 0 },
+  { comp: /Lumetri/i, name: /^Whites$/, min: -150, max: 150, def: 0 },
+  { comp: /Lumetri/i, name: /^Blacks$/, min: -150, max: 150, def: 0 },
   // Audio volume: not yet hardware-verified - the probe ran on a video
   // clip, so the Level units (dB assumed) are a best guess.
   { comp: /Volume|Audio Levels/i, name: /^Level$/, min: -60, max: 6, def: 0 },
@@ -886,30 +896,27 @@ function slotState(slot) {
   return pmapSlotState[slot];
 }
 
-function queueParamValue(slot, value, clean) {
-  if (!isFinite(slot) || !isFinite(value)) return;
-  const binding = pmapBindings[String(slot)];
-  if (!binding) {
-    pmapError(
-      `Slot ${slot} is not mapped - use Learn in the package preferences`,
-      "pmap",
-    );
-    return;
-  }
-  const span = binding.max - binding.min;
-  const mapped = Math.round((binding.min + (value / 127) * span) * 100) / 100;
+function unmappedError(slot) {
+  pmapError(
+    `Slot ${slot} is not mapped - use Learn in the package preferences`,
+    "pmap",
+  );
+}
 
-  // The module screen follows every move in both modes - this is what
-  // makes clean mode usable (you see the value without commits).
+// Common tail of every write path: remember the running value, echo it
+// to the module screen, and schedule the commit. The screen follows
+// every move in both modes - this is what makes clean mode usable
+// (you see the value without commits).
+function pushValue(slot, binding, state, value, clean) {
+  state.value = value;
+  state.touchedAt = Date.now();
   send({
     type: "pmval",
     slot,
     name: binding.paramName,
-    text: formatParamValue(mapped),
+    text: formatParamValue(value),
   });
-
-  const state = slotState(slot);
-  state.pending = mapped;
+  state.pending = value;
   if (clean) {
     // Debounce: every move pushes the single commit further out.
     if (state.timer) clearTimeout(state.timer);
@@ -921,6 +928,58 @@ function queueParamValue(slot, value, clean) {
   }
 }
 
+// Absolute mode (faders): knob position 0..127 maps onto the range.
+// 7-bit resolution - fine for a fader whose physical position should
+// BE the value, too coarse for detented endless knobs (use deltas).
+function queueParamValue(slot, value, clean) {
+  if (!isFinite(slot) || !isFinite(value)) return;
+  const binding = pmapBindings[String(slot)];
+  if (!binding) return unmappedError(slot);
+  const span = binding.max - binding.min;
+  const mapped = Math.round((binding.min + (value / 127) * span) * 100) / 100;
+  pushValue(slot, binding, slotState(slot), mapped, clean);
+}
+
+// Relative mode (endless knobs): each detent nudges the current value
+// by the block's step size (already multiplied in module-side, so the
+// wire carries value units). The running value seeds from the param
+// itself and re-syncs after PMAP_STALE_MS of quiet, so Premiere-side
+// edits (mouse drags, undo) between twists are picked up instead of
+// snapped back.
+async function queueParamDelta(slot, delta, clean) {
+  if (!isFinite(slot) || !isFinite(delta) || delta === 0) return;
+  const binding = pmapBindings[String(slot)];
+  if (!binding) return unmappedError(slot);
+  const state = slotState(slot);
+  state.accum = (state.accum ?? 0) + delta;
+  state.clean = clean;
+  if (state.syncing) return; // deltas keep accumulating meanwhile
+
+  const stale =
+    typeof state.value !== "number" ||
+    Date.now() - (state.touchedAt ?? 0) > PMAP_STALE_MS;
+  if (stale) {
+    state.syncing = true;
+    let current = null;
+    try {
+      const target = await resolveSlot(slot);
+      if (target?.param) current = await readParamValue(target.param);
+    } catch (e) {
+      /* fall back to the default below */
+    }
+    state.syncing = false;
+    state.value = typeof current === "number" ? current : binding.def;
+  }
+
+  if (!state.accum) return;
+  const next = Math.min(
+    binding.max,
+    Math.max(binding.min, state.value + state.accum),
+  );
+  state.accum = 0;
+  pushValue(slot, binding, state, Math.round(next * 1000) / 1000, state.clean);
+}
+
 async function resetParamValue(slot) {
   const binding = pmapBindings[String(slot)];
   if (!binding) return;
@@ -929,6 +988,9 @@ async function resetParamValue(slot) {
     clearTimeout(state.timer);
     state.timer = undefined;
   }
+  state.accum = 0;
+  state.value = binding.def;
+  state.touchedAt = Date.now();
   state.pending = binding.def;
   send({
     type: "pmval",

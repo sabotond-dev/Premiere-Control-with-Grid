@@ -734,16 +734,17 @@ exports.loadPackage = async function (gridController, persistedData) {
     actionComponent: "premiere-zoom-action",
   });
 
-  // Param Map - a fader/knob streams its value to a numbered slot;
-  // bindings between slots and Premiere effect parameters are learned
-  // by wiggle from the package preferences. The default is Live write
-  // mode (trailing 0); the component can switch to Clean-undo (1) or
-  // the button-event reset form.
+  // Param Map - a knob/fader drives a numbered slot; bindings between
+  // slots and Premiere effect parameters are learned by wiggle from
+  // the package preferences. Default is the relative endless-knob form
+  // (signed detent delta x step, Live mode); the component can switch
+  // to absolute fader mode, Clean-undo, or the button-event reset.
   createAction({
     short: "xpppm",
     displayName: "Param Map",
     defaultLua:
-      'gps("package-premiere-pro", "pmap", 1, self:get_auto_value(), 0)',
+      'gps("package-premiere-pro", "pmap", 1, "delta", ' +
+      "(((self.epst and self:epst()) or (self.est and self:est()) or 64)-64)*1, 0)",
     actionComponent: "premiere-pmap-action",
   });
 
@@ -895,10 +896,16 @@ exports.sendMessage = async function (args) {
       return;
     }
 
-    // args: ["pmap", slot, value, mode] with mode 0=live 1=clean;
-    // legacy spike scripts omit mode and degrade to live.
-    const value = Number(args[2]);
+    // Two value forms:
+    //   ["pmap", slot, value, mode]          - absolute (fader 0..127)
+    //   ["pmap", slot, "delta", step, mode]  - relative (endless knob,
+    //     step already multiplied by the block's per-click size)
+    // mode 0=live 1=clean; legacy spike scripts omit it -> live.
+    const relative = args[2] === "delta";
+    const value = Number(relative ? args[3] : args[2]);
     if (!isFinite(value)) return;
+    if (relative && value === 0) return; // off-element fallback yields 0
+    const clean = Number(relative ? args[4] : args[3]) === 1;
 
     // Learn step 2: the first Grid control that moves while a learned
     // param is waiting becomes its source. The triggering value is
@@ -918,7 +925,11 @@ exports.sendMessage = async function (args) {
       return;
     }
 
-    sendToPanel({ cmd: "pmap", slot, value, clean: Number(args[3]) === 1 });
+    if (relative) {
+      sendToPanel({ cmd: "pmap", slot, delta: value, clean });
+    } else {
+      sendToPanel({ cmd: "pmap", slot, value, clean });
+    }
     return;
   }
 

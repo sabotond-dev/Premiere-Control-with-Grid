@@ -501,14 +501,18 @@
   }
 
   // --- Param Map -------------------------------------------------------
-  // Streams a fader/knob value to a numbered mapping slot, or resets
-  // the slot's parameter to its default from a button press. Which
-  // Premiere parameter a slot drives is learned by wiggle from the
-  // package preferences.
+  // Drives a numbered mapping slot from a knob or fader, or resets the
+  // slot's parameter to its default from a button press. Which Premiere
+  // parameter a slot drives is learned by wiggle from the package
+  // preferences. Two control forms: relative (endless knob, signed
+  // detent delta x a per-click step - fine, even increments) and
+  // absolute (fader position 0..127 mapped onto the whole range).
   class PmapAction extends PremiereActionElement {
     render() {
       this.slot = 1;
       this.mode = "live";
+      this.control = "relative";
+      this.step = 1;
       const root = document.createElement("div");
       root.className = "pp-root";
       root.innerHTML = `
@@ -528,26 +532,64 @@
             <option value="reset">Reset to default (button)</option>
           </select>
         </label>
+        <label class="pp-field pp-control-row">
+          <span>Control</span>
+          <select class="pp-input pp-control">
+            <option value="relative">Endless knob (relative)</option>
+            <option value="absolute">Fader (absolute 0-127)</option>
+          </select>
+        </label>
+        <label class="pp-field pp-step-row">
+          <span>Step / click</span>
+          <input class="pp-input pp-step" type="number"
+            min="0.01" max="50" step="0.01" value="1" />
+        </label>
         <div class="pp-note">
           Map a slot to a Premiere effect parameter with <b>Learn</b> in
-          the package preferences, then put this on a fader or knob.
-          <b>Live picture</b> updates Premiere ~10×/s while you turn -
-          instant feedback, but every step lands in the undo history.
-          <b>Clean undo</b> shows the moving value only on the module
-          screen and commits a single undo entry half a second after
-          you stop. <b>Reset</b> goes on the knob's press (Button
-          event) and snaps the parameter back to its default.
+          the package preferences. <b>Endless knob</b> nudges the value
+          by the step above per detent (set 0.1 for fine rides; fast
+          twists cover ground quicker). <b>Fader</b> maps the physical
+          position onto the parameter's full range. <b>Live picture</b>
+          updates Premiere ~10×/s while you turn; <b>Clean undo</b>
+          shows the moving value only on the module screen and commits
+          a single undo entry half a second after you stop.
+          <b>Reset</b> goes on the knob's press (Button event) and
+          snaps the parameter back to its default.
         </div>`;
       this.appendChild(root);
       this.slotSel = root.querySelector(".pp-slot");
       this.modeSel = root.querySelector(".pp-mode");
+      this.controlSel = root.querySelector(".pp-control");
+      this.stepInput = root.querySelector(".pp-step");
+      this.controlRow = root.querySelector(".pp-control-row");
+      this.stepRow = root.querySelector(".pp-step-row");
       const onChange = () => {
         this.slot = Math.max(1, Math.min(8, Number(this.slotSel.value) || 1));
         this.mode = this.modeSel.value;
+        this.control = this.controlSel.value;
+        this.step = Math.max(
+          0.01,
+          Math.min(50, Number(this.stepInput.value) || 1),
+        );
+        this.syncRows();
         this.commit();
       };
       this.slotSel.addEventListener("change", onChange);
       this.modeSel.addEventListener("change", onChange);
+      this.controlSel.addEventListener("change", onChange);
+      this.stepInput.addEventListener("input", onChange);
+    }
+
+    // The control/step rows only apply to the value-sending forms
+    // (and step only to the relative one).
+    syncRows() {
+      if (this.controlRow) {
+        this.controlRow.style.display = this.mode === "reset" ? "none" : "";
+      }
+      if (this.stepRow) {
+        this.stepRow.style.display =
+          this.mode === "reset" || this.control !== "relative" ? "none" : "";
+      }
     }
 
     fromScript(script) {
@@ -555,13 +597,26 @@
       if (m) {
         this.slot = Number(m[1]);
         this.mode = "reset";
+      } else if (
+        (m = script.match(
+          /"pmap",\s*(\d+),\s*"delta",[\s\S]*?\*\s*([\d.]+),\s*(\d)\s*\)/,
+        ))
+      ) {
+        this.slot = Number(m[1]);
+        this.control = "relative";
+        this.step = Number(m[2]) || 1;
+        this.mode = m[3] === "1" ? "clean" : "live";
       } else {
         m = script.match(/"pmap",\s*(\d+)(?:.*?,\s*(\d)\s*\))?/);
         this.slot = m ? Number(m[1]) : 1;
+        this.control = "absolute";
         this.mode = m && m[2] === "1" ? "clean" : "live";
       }
       if (this.slotSel) this.slotSel.value = String(this.slot);
       if (this.modeSel) this.modeSel.value = this.mode;
+      if (this.controlSel) this.controlSel.value = this.control;
+      if (this.stepInput) this.stepInput.value = String(this.step);
+      this.syncRows();
     }
 
     toScript() {
@@ -573,6 +628,12 @@
         );
       }
       const clean = this.mode === "clean" ? 1 : 0;
+      if (this.control === "relative") {
+        return (
+          `gps("${PKG}", "pmap", ${this.slot}, "delta", ` +
+          `(((self.epst and self:epst()) or (self.est and self:est()) or 64)-64)*${this.step}, ${clean})`
+        );
+      }
       return `gps("${PKG}", "pmap", ${this.slot}, self:get_auto_value(), ${clean})`;
     }
   }
